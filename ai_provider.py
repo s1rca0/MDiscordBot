@@ -30,16 +30,7 @@ async def ai_reply(system: str, messages: List[Dict[str, str]],
 
         def _call():
             try:
-                # For conversational models, use chat_completion instead of text_generation
-                chat_messages = [{"role": "system", "content": system}] + messages
-                response = client.chat_completion(
-                    messages=chat_messages,
-                    max_tokens=max_new_tokens,
-                    temperature=temperature,
-                )
-                return response.choices[0].message.content
-            except Exception:
-                # Fallback to text_generation for older models
+                # Use a simple, reliable model that works with text generation
                 prompt = (
                     f"System: {system}\n"
                     + "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
@@ -52,6 +43,8 @@ async def ai_reply(system: str, messages: List[Dict[str, str]],
                     do_sample=True,
                     return_full_text=False,
                 )
+            except Exception as e:
+                return f"Model error: {str(e)[:100]}. Try a different model like 'gpt2' or 'microsoft/DialoGPT-medium'"
 
         text = await loop.run_in_executor(None, _call)
         return (text or "").strip()
