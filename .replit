@@ -21,6 +21,10 @@ args = "Discord Bot"
 task = "workflow.run"
 args = "discord_bot_test"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Discord Bot Dev"
+
 [[workflows.workflow]]
 name = "Discord Bot"
 author = "agent"
@@ -39,6 +43,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pip install discord.py python-dotenv psutil && python main.py"
+
+[[workflows.workflow]]
+name = "Discord Bot Dev"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python watch_and_restart.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [[ports]]
 localPort = 8080
