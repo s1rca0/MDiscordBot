@@ -4,7 +4,7 @@ from typing import List, Dict
 from huggingface_hub import InferenceClient
 
 PROVIDER  = os.getenv("PROVIDER", "hf").lower()
-HF_MODEL  = os.getenv("HF_MODEL", "gpt2")
+HF_MODEL  = os.getenv("HF_MODEL", "HuggingFaceH4/zephyr-7b-beta")
 HF_TOKEN  = os.getenv("HF_API_TOKEN", "")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 

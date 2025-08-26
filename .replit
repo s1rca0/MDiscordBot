@@ -15,19 +15,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "discord_bot_test"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "Discord Bot"
-
-[[workflows.workflow]]
-name = "discord_bot_test"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pip install discord.py python-dotenv psutil && python main.py"
 
 [[workflows.workflow]]
 name = "Discord Bot"
