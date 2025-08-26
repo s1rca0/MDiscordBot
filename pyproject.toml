@@ -1,10 +1,43 @@
 [project]
 name = "repl-nix-workspace"
 version = "0.1.0"
-description = "Add your description here"
+description = "Discord AI bot (Replit + HF dev, OpenAI-ready)"
 requires-python = ">=3.11"
+readme = "README.md"
+
 dependencies = [
-    "discord-py>=2.6.2",
-    "psutil>=7.0.0",
-    "python-dotenv>=1.1.1",
+  "discord.py==2.4.0", # official discord.py
+  "requests>=2.32.0", # HTTP for HF API
+  "python-dotenv>=1.0.1", # load env vars from .env (local dev)
+  "openai>=1.40.0", # safe to keep; only used if PROVIDER=openai
+  # "psutil>=7.0.0",        # uncomment only if you actually use it
+  "flask>=3.0.0",          # web server for hosting
+  "huggingface_hub>=0.23.0", # HF API
 ]
+
+# Optional: handy dev tools (remove if you don't want them)
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5.0",            # fast linter
+  "black>=24.3.0",          # code formatter
+  "pytest>=8.0.0",          # tests (if you add any)
+]
+
+# uv is Replit’s package manager; keep this minimal and clear
+[tool.uv]
+# Constrain Python for reproducibility (adjust if you change Replit’s runtime)
+constraint = "python>=3.11,<3.12"
+
+# If you ever need to install from Git or a private index, you can add sources:
+# [tool.uv.sources]
+# mylib = { git = "https://github.com/you/mylib.git", rev = "main" }
+
+# Optional linters/formatters config (only used if you install them)
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E","F","I"]  # basic errors/format/imports

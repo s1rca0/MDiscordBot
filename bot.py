@@ -1,122 +1,128 @@
-"""
-Discord Bot Core Implementation
-Main bot class with command handling and event management.
-"""
-
+# bot.py
 import os
+import asyncio
 import logging
+from typing import Optional
+
 import discord
 from discord.ext import commands
+from discord import app_commands
+
+from ai_provider import ai_reply  # HF ↔ OpenAI switch
 from config import BotConfig
 
+cfg = BotConfig()
+cfg.validate_config()
+
+log = logging.getLogger(__name__)
+
 class DiscordBot:
-    """Main Discord bot class."""
-    
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.config = BotConfig()
-        
-        # Configure bot intents
+        self._synced = False
+        # Intents
         intents = discord.Intents.default()
-        intents.message_content = True
-        
-        # Initialize bot with command prefix
+        intents.message_content = True   # needed to read message text
+        intents.members = True           # for join events / greetings
+
+        # Create commands.Bot so we can do slash + events
         self.bot = commands.Bot(
-            command_prefix=self.config.COMMAND_PREFIX,
+            command_prefix="!",
             intents=intents,
-            help_command=None  # We'll create a custom help command
+            description="AI Discord Bot (HF dev, OpenAI-ready)"
         )
-        
-        # Register event handlers
-        self.setup_events()
-        
-    def setup_events(self):
-        """Set up bot event handlers."""
-        
+
+        # Wire events/commands
+        self._register_events()
+        self._register_app_commands()
+
+    # ----------------- public API used by main.py -----------------
+    async def start_bot(self):
+        token = cfg.BOT_TOKEN
+        if not token:
+            raise RuntimeError("Missing DISCORD_BOT_TOKEN env var")
+        await self.bot.start(token)
+
+    # ----------------- events & commands -----------------
+    def _register_events(self):
         @self.bot.event
         async def on_ready():
-            """Called when the bot is ready and connected."""
-            self.logger.info(f'{self.bot.user} has connected to Discord!')
-            self.logger.info(f'Bot is in {len(self.bot.guilds)} guilds')
-            
-            # Set bot status
-            activity = discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{self.config.COMMAND_PREFIX}help for commands"
-            )
-            await self.bot.change_presence(activity=activity, status=discord.Status.online)
-            
+            try:
+                synced = await self.bot.tree.sync()
+                log.info("Synced %d commands: %s", len(synced), [c.name for c in synced])
+            except Exception as e:
+                log.warning("Slash command sync failed: %s", e)
+            log.info("✅ Logged in as %s (%s)", self.bot.user, self.bot.user.id)
+
         @self.bot.event
-        async def on_guild_join(guild):
-            """Called when bot joins a new guild."""
-            self.logger.info(f'Joined guild: {guild.name} (ID: {guild.id})')
-            
+        async def on_member_join(member: discord.Member):
+            # Greet publicly if possible
+            ch = member.guild.system_channel
+            if ch:
+                try:
+                    await ch.send(
+                        f"Welcome {member.mention}! I’m {self.bot.user.name} — ping me or use /ask to chat."
+                    )
+                except Exception:
+                    pass
+            # DM greeting (may fail if DMs are blocked)
+            try:
+                await member.send(
+                    f"Hi {member.display_name}! I’m {self.bot.user.name}. "
+                    f"Type /ask in the server or DM me here."
+                )
+            except Exception:
+                pass
+
         @self.bot.event
-        async def on_guild_remove(guild):
-            """Called when bot leaves a guild."""
-            self.logger.info(f'Left guild: {guild.name} (ID: {guild.id})')
-            
-        @self.bot.event
-        async def on_message(message):
-            """Handle incoming messages."""
-            # Ignore messages from bots
+        async def on_message(message: discord.Message):
+            # Keep other commands working
             if message.author.bot:
                 return
-                
-            # Log message for debugging (be careful with privacy)
-            if self.config.DEBUG_MODE:
-                self.logger.debug(f'Message from {message.author}: {message.content[:50]}...')
-            
-            # Process commands
-            await self.bot.process_commands(message)
-            
-        @self.bot.event
-        async def on_command_error(ctx, error):
-            """Handle command errors."""
-            if isinstance(error, commands.CommandNotFound):
-                await ctx.send(f"❌ Command not found. Use `{self.config.COMMAND_PREFIX}help` to see available commands.")
-            elif isinstance(error, commands.MissingRequiredArgument):
-                await ctx.send(f"❌ Missing required argument. Use `{self.config.COMMAND_PREFIX}help {ctx.command}` for usage.")
-            elif isinstance(error, commands.MissingPermissions):
-                await ctx.send("❌ You don't have permission to use this command.")
-            elif isinstance(error, commands.BotMissingPermissions):
-                await ctx.send("❌ I don't have the required permissions to execute this command.")
-            elif isinstance(error, commands.CommandOnCooldown):
-                await ctx.send(f"❌ Command on cooldown. Try again in {error.retry_after:.2f} seconds.")
-            else:
-                self.logger.error(f'Unhandled command error: {error}')
-                await ctx.send("❌ An unexpected error occurred while processing your command.")
-    
-    async def load_cogs(self):
-        """Load all cogs (command modules)."""
-        cogs_to_load = [
-            'cogs.basic_commands'
-        ]
-        
-        for cog in cogs_to_load:
+
+            # Trigger policy: reply in DMs, or when mentioned in a guild
+            trigger = (message.guild is None) or (self.bot.user in message.mentions)
+            if not trigger:
+                return
+
+            # Clean mention text in guilds
+            content = message.content
+            if message.guild is not None:
+                content = content.replace(f"<@{self.bot.user.id}>", "").strip()
+                content = content.replace(f"<@!{self.bot.user.id}>", "").strip()
+            if not content:
+                content = "Say hi."
+
             try:
-                await self.bot.load_extension(cog)
-                self.logger.info(f'Loaded cog: {cog}')
+                reply = await ai_reply(
+                    cfg.SYSTEM_PROMPT,
+                    [{"role": "user", "content": content}],
+                    max_new_tokens=cfg.AI_MAX_NEW_TOKENS,
+                    temperature=cfg.AI_TEMPERATURE
+                )
             except Exception as e:
-                self.logger.error(f'Failed to load cog {cog}: {e}')
-    
-    async def start_bot(self):
-        """Start the Discord bot."""
-        try:
-            # Load cogs before starting
-            await self.load_cogs()
-            
-            # Start the bot
-            await self.bot.start(self.config.BOT_TOKEN)
-            
-        except discord.LoginFailure:
-            self.logger.error("Invalid bot token provided")
-            raise
-        except discord.HTTPException as e:
-            self.logger.error(f"HTTP error occurred: {e}")
-            raise
-        except Exception as e:
-            self.logger.error(f"Unexpected error starting bot: {e}")
-            raise
-        finally:
-            await self.bot.close()
+                log.exception("AI error: %s", e)
+                reply = "Sorry, I hit an error. Try again."
+            if not reply or not reply.strip():
+                reply = "I’m here—try asking me again."
+            await message.channel.send(reply[:1900])
+            # Allow prefixed commands to run too
+            await self.bot.process_commands(message)
+
+    def _register_app_commands(self):
+        @self.bot.tree.command(name="ask", description="Ask the AI a question")
+        @app_commands.describe(prompt="Your question or prompt")
+        async def ask(interaction: discord.Interaction, prompt: str):
+            await interaction.response.defer()
+            try:
+                reply = await ai_reply(
+                    cfg.SYSTEM_PROMPT,
+                    [{"role": "user", "content": prompt}],
+                    max_new_tokens=cfg.AI_MAX_NEW_TOKENS,
+                    temperature=cfg.AI_TEMPERATURE
+                )
+            except Exception as e:
+                log.exception("AI error: %s", e)
+                reply = "Sorry, I couldn’t get a response."
+                if not reply or not reply.strip():
+                    reply = "I’m here—try asking me again."
+            await interaction.followup.send(reply[:1900])

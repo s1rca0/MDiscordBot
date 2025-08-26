@@ -39,3 +39,7 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "pip install discord.py python-dotenv psutil && python main.py"
+
+[[ports]]
+localPort = 8080
+externalPort = 80
