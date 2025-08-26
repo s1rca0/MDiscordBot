@@ -103,7 +103,7 @@ class DiscordBot:
                 log.exception("AI error: %s", e)
                 reply = "Sorry, I hit an error. Try again."
             if not reply or not reply.strip():
-                reply = "I am here - try asking me again."
+                reply = "I’m here—try asking me again."
             await message.channel.send(reply[:1900])
             # Allow prefixed commands to run too
             await self.bot.process_commands(message)
@@ -123,7 +123,6 @@ class DiscordBot:
             except Exception as e:
                 log.exception("AI error: %s", e)
                 reply = "Sorry, I couldn’t get a response."
-                
-            if not reply or not reply.strip():
-                    reply = "I am here - try asking me again."
+                if not reply or not reply.strip():
+                    reply = "I’m here—try asking me again."
             await interaction.followup.send(reply[:1900])
