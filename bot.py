@@ -16,8 +16,9 @@ class DiscordBot:
         self.logger = logging.getLogger(__name__)
         self.config = BotConfig()
         
-        # Configure bot intents (using only default intents to avoid privileged intent requirements)
+        # Configure bot intents
         intents = discord.Intents.default()
+        intents.message_content = True
         
         # Initialize bot with command prefix
         self.bot = commands.Bot(
