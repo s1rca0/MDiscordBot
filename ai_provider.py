@@ -24,18 +24,27 @@ async def ai_reply(system: str, messages: List[Dict[str, str]],
         return r.choices[0].message.content.strip()
 
     # ---- Hugging Face path (default) ----
-    prompt = (
-        f"System: {system}\n"
-        + "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
-        + "\nAssistant:"
-    )
-
     try:
         client = InferenceClient(model=HF_MODEL, token=(HF_TOKEN or None))
         loop = asyncio.get_running_loop()
 
         def _call():
             try:
+                # For conversational models, use chat_completion instead of text_generation
+                chat_messages = [{"role": "system", "content": system}] + messages
+                response = client.chat_completion(
+                    messages=chat_messages,
+                    max_tokens=max_new_tokens,
+                    temperature=temperature,
+                )
+                return response.choices[0].message.content
+            except Exception:
+                # Fallback to text_generation for older models
+                prompt = (
+                    f"System: {system}\n"
+                    + "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
+                    + "\nAssistant:"
+                )
                 return client.text_generation(
                     prompt,
                     max_new_tokens=max_new_tokens,
@@ -43,9 +52,6 @@ async def ai_reply(system: str, messages: List[Dict[str, str]],
                     do_sample=True,
                     return_full_text=False,
                 )
-            except StopIteration:
-                # Some client builds improperly raise StopIteration
-                return ""
 
         text = await loop.run_in_executor(None, _call)
         return (text or "").strip()
