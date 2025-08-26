@@ -24,6 +24,7 @@ async def ai_reply(system: str, messages: List[Dict[str, str]],
         return r.choices[0].message.content.strip()
 
     # ---- Hugging Face path (default) ----
+    print(f"DEBUG: Using model: {HF_MODEL}")
     try:
         client = InferenceClient(model=HF_MODEL, token=(HF_TOKEN or None))
         loop = asyncio.get_running_loop()
