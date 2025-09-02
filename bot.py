@@ -1,4 +1,6 @@
 # bot.py
+from __future__ import annotations
+
 import os
 import asyncio
 import logging
@@ -9,19 +11,36 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-from ai_provider import ai_reply
-from config import BotConfig
+from ai_provider import chat_completion  # stable wrapper
+from config import cfg  # module-level instance with safe defaults
 
-cfg = BotConfig()
+
+# ---------- Logging: stdout-first (no files on Hobby) ----------
+handlers = [logging.StreamHandler()]
+if cfg.LOG_FILE:  # if you ever set one explicitly, we'll add it
+    try:
+        handlers.append(logging.FileHandler(cfg.LOG_FILE, encoding="utf-8"))
+    except Exception as e:
+        # Don't fail startup if file logging can't open
+        print(f"[WARN] Failed to open LOG_FILE '{cfg.LOG_FILE}': {e}")
+
+logging.basicConfig(
+    level=getattr(logging, cfg.LOG_LEVEL.upper(), logging.INFO),
+    handlers=handlers,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+log = logging.getLogger("morpheus.bot")
+
+# Soft validation (never crashes on optional envs)
 cfg.validate_config()
 
-log = logging.getLogger(__name__)
 
-# Helper/deleted modules to skip during auto-load
+# Any modules we intentionally skip on auto-load (no setup(), deprecated, etc.)
 EXCLUDE_MODULES = {
-    "cogs.persona",     # helper (no setup())
-    "cogs.lore_cog",    # you removed it
+    "cogs.persona",     # helper only
+    "cogs.lore_cog",    # removed
 }
+
 
 class DiscordBot:
     def __init__(self):
@@ -33,7 +52,7 @@ class DiscordBot:
         self.bot = commands.Bot(
             command_prefix=cfg.COMMAND_PREFIX,
             intents=intents,
-            description="Morpheus — AI assistant for Legends in Motion HQ",
+            description="M.O.R.P.H.E.U.S. — AI assistant for Legends in Motion HQ",
         )
         self._register_events()
         self._register_app_commands()
@@ -75,7 +94,7 @@ class DiscordBot:
                 msg = ", ".join(f"{m} ({why})" for m, why in skipped)
                 log.info("Skipped/failed cogs: %s", msg)
 
-            # Sync slash commands
+            # Sync slash commands globally
             try:
                 synced = await self.bot.tree.sync()
                 log.info("Synced %d commands: %s", len(synced), [c.name for c in synced])
@@ -85,26 +104,47 @@ class DiscordBot:
             log.info("✅ Logged in as %s (%s)", self.bot.user, self.bot.user.id)
 
     def _register_app_commands(self):
-        @self.bot.tree.command(name="ask", description="Ask Morpheus a question")
+        @self.bot.tree.command(name="ask", description="Ask M.O.R.P.H.E.U.S. a question")
         @app_commands.describe(prompt="Your question or prompt")
         async def ask(interaction: discord.Interaction, prompt: str):
             await interaction.response.defer()
+
+            system_prompt = os.getenv(
+                "SYSTEM_PROMPT",
+                "You are M.O.R.P.H.E.U.S., a helpful, concise assistant.",
+            )
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+
             try:
-                reply = await ai_reply(
-                    cfg.SYSTEM_PROMPT,
-                    [{"role": "user", "content": prompt}],
-                    max_new_tokens=cfg.AI_MAX_NEW_TOKENS,
+                reply = chat_completion(
+                    messages,
                     temperature=cfg.AI_TEMPERATURE,
+                    max_tokens=cfg.AI_MAX_NEW_TOKENS,
                 )
             except Exception as e:
                 log.exception("AI error: %s", e)
                 reply = "I encountered interference. Try again."
+
             if not reply or not reply.strip():
                 reply = "I am here—ask again."
-            await interaction.followup.send(reply[:1900])
+
+            await interaction.followup.send(reply[: cfg.MAX_MESSAGE_LENGTH])
 
     async def start_bot(self):
-        token = cfg.DISCORD_BOT_TOKEN
+        token = cfg.BOT_TOKEN  # matches config.py
         if not token:
             raise RuntimeError("Missing DISCORD_BOT_TOKEN env var")
         await self.bot.start(token)
+
+
+async def main():
+    bot = DiscordBot()
+    await bot.start_bot()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

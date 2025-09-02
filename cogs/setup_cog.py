@@ -1,139 +1,55 @@
 # cogs/setup_cog.py
 from __future__ import annotations
-
 import discord
 from discord import app_commands
 from discord.ext import commands
+from config import cfg
 
-from config import BotConfig
-
-cfg = BotConfig()
-
-
-def _fmt_bool(v: bool | None) -> str:
-    if v is None:
-        return "—"
-    return "Enabled ✅" if v else "Disabled ⛔"
-
-
-def _fmt_channel(guild: discord.Guild, chan_id: int | None) -> str:
-    if not chan_id:
-        return "—"
-    ch = guild.get_channel(chan_id)
-    if isinstance(ch, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)):
-        return ch.mention
-    # If ID doesn’t resolve in this guild, show the raw ID (helps debug)
-    return f"`#{chan_id}` (not found here)"
-
+def _yn(v: bool) -> str:
+    return "✅ On" if v else "❌ Off"
 
 class SetupCog(commands.Cog):
-    """Admin setup/status for M.O.R.P.H.E.U.S."""
+    """Lightweight /setup that does not require any channel IDs to exist."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ---------- UI helpers ----------
-    def _status_embed(self, guild: discord.Guild) -> discord.Embed:
-        e = discord.Embed(
-            title="M.O.R.P.H.E.U.S. • Setup Status",
-            color=cfg.DEFAULT_EMBED_COLOR,
-        )
-        e.set_thumbnail(url=getattr(guild.icon, "url", discord.Embed.Empty))
+    @app_commands.command(name="setup", description="Show current bot configuration status.")
+    async def setup(self, interaction: discord.Interaction) -> None:
+        cfg.validate_core()
 
-        # Core
-        e.add_field(
-            name="Core",
-            value=(
-                f"Owner: {f'<@{cfg.OWNER_USER_ID}>' if cfg.OWNER_USER_ID else '—'}\n"
-                f"Provider: `{cfg.PROVIDER}`\n"
-                f"Default AI mode: `{cfg.AI_MODE_DEFAULT}`"
+        embed = discord.Embed(
+            title="M.O.R.P.H.E.U.S. • Setup Overview",
+            color=discord.Color.blurple(),
+            description=(
+                "Here’s the current configuration. Everything is stateless and safe for Railway Hobby.\n"
+                "Optional features are disabled when their IDs aren’t set."
             ),
-            inline=False,
         )
-
-        # Feature flags
-        e.add_field(
-            name="Features",
-            value=(
-                f"Invites: {_fmt_bool(cfg.ENABLE_INVITES)}\n"
-                f"Meme Feed: {_fmt_bool(cfg.ENABLE_MEME_FEED)}\n"
-                f"Disaster Tools: {_fmt_bool(cfg.ENABLE_DISASTER_TOOLS)}"
-            ),
-            inline=False,
-        )
-
-        # Optional channels
-        e.add_field(
-            name="Channels",
-            value=(
-                f"Welcome: {_fmt_channel(guild, cfg.WELCOME_CHANNEL_ID)}\n"
-                f"YouTube Announcements: {_fmt_channel(guild, cfg.YT_ANNOUNCE_CHANNEL_ID)}\n"
-                f"Support: {_fmt_channel(guild, cfg.SUPPORT_CHANNEL_ID)}"
-            ),
-            inline=False,
-        )
+        embed.add_field(name="AI Provider", value=cfg.PROVIDER or "—", inline=True)
+        embed.add_field(name="Mode", value=cfg.AI_MODE_DEFAULT, inline=True)
+        embed.add_field(name="Logging", value=("stdout only" if not cfg.LOG_FILE else cfg.LOG_FILE), inline=True)
 
         # Invites
-        e.add_field(
-            name="Server Invite",
-            value=cfg.SERVER_INVITE_URL or "—",
-            inline=False,
-        )
+        inv = cfg.SERVER_INVITE_URL or "Not set"
+        embed.add_field(name="Invites Enabled", value=_yn(cfg.ALLOW_INVITES), inline=True)
+        embed.add_field(name="Server Invite", value=inv, inline=True)
 
-        # VoidPulse snapshot
-        e.add_field(
-            name="VoidPulse",
-            value=(
-                f"Cooldown: `{cfg.VOID_COOLDOWN_HOURS}h`\n"
-                f"Title: `{cfg.VOID_TITLE}`\n"
-                f"Message: `{cfg.VOID_MSG}`"
-            ),
-            inline=False,
-        )
+        # Meme feed
+        meme_channel = f"<#{cfg.MEME_CHANNEL_ID}>" if cfg.MEME_CHANNEL_ID else "Not set"
+        embed.add_field(name="Meme Feed", value=_yn(cfg.MEMES_ENABLED), inline=True)
+        embed.add_field(name="Meme Channel", value=meme_channel, inline=True)
 
-        # Meme feed snapshot
-        e.add_field(
-            name="Meme Feed",
-            value=(
-                f"Target: {_fmt_channel(guild, cfg.MEME_CHANNEL_ID)}\n"
-                f"Interval: `{cfg.MEME_INTERVAL_MIN} min`"
-            ),
-            inline=False,
-        )
+        # YT announcements
+        yt_channel = f"<#{cfg.YT_ANNOUNCE_CHANNEL_ID}>" if cfg.YT_ANNOUNCE_CHANNEL_ID else "Not set"
+        embed.add_field(name="YT Announce Channel", value=yt_channel, inline=True)
 
-        e.set_footer(text="Tip: Unset values show as — and are perfectly fine.")
-        return e
+        # Tickets
+        ticket_home = f"<#{cfg.TICKET_HOME_CHANNEL_ID}>" if cfg.TICKET_HOME_CHANNEL_ID else "Not set"
+        embed.add_field(name="Tickets/Home", value=ticket_home, inline=True)
 
-    # ---------- Commands ----------
-    @app_commands.command(name="setup", description="Show bot setup status (admin).")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup_panel(self, interaction: discord.Interaction):
-        """Ephemeral admin status panel; works even if optional IDs are unset."""
-        await interaction.response.send_message(
-            embed=self._status_embed(interaction.guild),
-            ephemeral=True,
-        )
-
-    # Optional quick test to confirm the bot can reply
-    @app_commands.command(name="ping", description="M.O.R.P.H.E.U.S. self-check.")
-    async def ping(self, interaction: discord.Interaction):
-        await interaction.response.send_message("The grid is awake. ✅", ephemeral=True)
-
-    # ---------- Error handling ----------
-    @setup_panel.error
-    async def setup_panel_error(self, interaction: discord.Interaction, error: Exception):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "You need **Manage Server** to use `/setup`.", ephemeral=True
-            )
-            return
-        # Fallback
-        msg = f"Setup encountered an issue: `{type(error).__name__}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
-
+        embed.set_footer(text="Tip: You can run /setup anytime. No filesystem needed.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SetupCog(bot))
