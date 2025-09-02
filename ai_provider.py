@@ -48,13 +48,17 @@ def current_model_name() -> str:
     return cfg.GROQ_MODEL_FAST or cfg.GROQ_MODEL or "llama-3.1-8b-instant"
 
 
-def chat_completion(messages: List[Dict[str, str]], temperature: float | None = None, max_tokens: int | None = None) -> str:
+def chat_completion(
+    messages: List[Dict[str, str]],
+    temperature: float | None = None,
+    max_tokens: int | None = None
+) -> str:
     """
     Minimal chat wrapper used by the bot's /ask (and others).
     """
     model = current_model_name()
     temp = cfg.AI_TEMPERATURE if temperature is None else temperature
-    mxt = cfg.AI_MAX_NEW_TOKENS if max_tokens is None else max_tokens
+    mxt  = cfg.AI_MAX_NEW_TOKENS if max_tokens is None else max_tokens
 
     if cfg.PROVIDER == "groq":
         client = _groq()
@@ -78,6 +82,7 @@ def chat_completion(messages: List[Dict[str, str]], temperature: float | None = 
             temperature=float(temp),
             max_tokens=int(mxt),
         )
+        # openai client may return as dict-like
         return resp.choices[0].message["content"] or ""
 
     # Hugging Face (very minimal, text-generation style)
@@ -102,3 +107,24 @@ def chat_completion(messages: List[Dict[str, str]], temperature: float | None = 
         return str(data)
 
     return "Provider not configured."
+
+
+# ---------- NEW: simple public entrypoint expected by the bot ----------
+def ai_reply(
+    prompt: str,
+    system: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> str:
+    """
+    Public entry used elsewhere in the bot: turns a plain prompt into a chat completion.
+    Keeps the runtime mode selection logic inside current_model_name().
+    """
+    messages: List[Dict[str, str]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    return chat_completion(messages, temperature=temperature, max_tokens=max_tokens)
+
+
+__all__ = ["chat_completion", "ai_reply", "current_model_name"]
