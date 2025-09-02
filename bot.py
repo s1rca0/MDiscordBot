@@ -104,7 +104,7 @@ class DiscordBot:
             await interaction.followup.send(reply[:1900])
 
     async def start_bot(self):
-        token = cfg.BOT_TOKEN
+        token = cfg.DISCORD_BOT_TOKEN
         if not token:
             raise RuntimeError("Missing DISCORD_BOT_TOKEN env var")
         await self.bot.start(token)
