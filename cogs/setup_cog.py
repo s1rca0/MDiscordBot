@@ -34,7 +34,8 @@ def _embed(guild: discord.Guild) -> discord.Embed:
     e.add_field(name="Mode", value=get_mode(cfg.AI_MODE_DEFAULT), inline=True)
     e.add_field(name="Logging", value=cfg.LOG_FILE or "stdout", inline=True)
 
-    e.add_field(name="Invites Enabled", value=_ok(cfg.ENABLE_INVITES), inline=True)
+    # FIX: read the invite flag from cfg.ALLOW_INVITES (not cfg.ENABLE_INVITES)
+    e.add_field(name="Invites Enabled", value=_ok(cfg.ALLOW_INVITES), inline=True)
     e.add_field(name="Server Invite", value=_link(cfg.SERVER_INVITE_URL), inline=True)
     e.add_field(name="\u200b", value="\u200b", inline=True)
 
@@ -115,7 +116,7 @@ class OverviewView(discord.ui.View):
 
         if not cfg.SERVER_INVITE_URL:
             add_btn("Set Invite", discord.ButtonStyle.primary, self._set_invite)
-        if not cfg.ENABLE_INVITES:
+        if not cfg.ALLOW_INVITES:  # FIX
             add_btn("Enable Invites", discord.ButtonStyle.success, self._enable_invites)
         if not cfg.MEME_CHANNEL_ID:
             add_btn("Pick Meme Channel", discord.ButtonStyle.secondary, self._pick_meme)
@@ -124,7 +125,8 @@ class OverviewView(discord.ui.View):
         if not cfg.TICKET_HOME_CHANNEL_ID:
             add_btn("Pick Tickets/Home", discord.ButtonStyle.secondary, self._pick_ticket)
 
-        add_btn("Open Settings", discord.ButtonStyle.blurple, self._open_settings)
+        # ButtonStyle.blurple is not a valid enum in discord.py 2.x; use primary
+        add_btn("Open Settings", discord.ButtonStyle.primary, self._open_settings)
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -187,7 +189,7 @@ class SettingsView(discord.ui.View):
         add_btn("Back to Overview", discord.ButtonStyle.secondary, self._back)
         add_btn("Set Invite", discord.ButtonStyle.primary, self._set_invite)
 
-        if cfg.ENABLE_INVITES:
+        if cfg.ALLOW_INVITES:  # FIX
             add_btn("Disable Invites", discord.ButtonStyle.danger, self._disable_invites)
         else:
             add_btn("Enable Invites", discord.ButtonStyle.success, self._enable_invites)
@@ -273,11 +275,15 @@ class SetupCog(commands.Cog):
                                                 view=OverviewView(self))
 
     async def _toggle_invites(self, interaction: discord.Interaction, on: bool, *, refresh_settings: bool = False):
+        # We continue to write the override key ENABLE_INVITES for compatibility.
         store.set("ENABLE_INVITES", on)
         cfg.reload_overrides(store.all())
         view = SettingsView(self) if refresh_settings else OverviewView(self)
-        await interaction.response.edit_message(content=f"Invites {'enabled' if on else 'disabled'}.",
-                                                embed=_embed(interaction.guild), view=view)
+        await interaction.response.edit_message(
+            content=f"Invites {'enabled' if on else 'disabled'}.",
+            embed=_embed(interaction.guild),
+            view=view
+        )
 
     async def _set_mode(self, interaction: discord.Interaction, mode: str, *, refresh_settings: bool = False):
         store.set("AI_MODE_DEFAULT", mode)
