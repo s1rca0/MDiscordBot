@@ -1,110 +1,35 @@
-# config.py
 import os
 
-def _as_bool(v, default=False):
-    if v is None:
-        return default
-    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+class Config:
+    # Discord Core
+    DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+    COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "$")
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0"))
 
-def _as_int(v, default=0):
-    try:
-        return int(str(v).strip())
-    except Exception:
-        return default
+    # AI Provider / Models
+    PROVIDER = os.getenv("PROVIDER", "groq")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    GROQ_MODEL_FAST = os.getenv("GROQ_MODEL_FAST", "llama-3.1-8b-instant")
+    GROQ_MODEL_SMART = os.getenv("GROQ_MODEL_SMART", "llama-3.1-70b-versatile")
+    AI_MODE_DEFAULT = os.getenv("AI_MODE_DEFAULT", "smart")
 
-def _as_float(v, default=0.0):
-    try:
-        return float(str(v).strip())
-    except Exception:
-        return default
+    # Server Invite
+    SERVER_INVITE_URL = os.getenv("SERVER_INVITE_URL")
 
-def _as_int_list(v):
-    if not v:
-        return []
-    out = []
-    for p in str(v).split(","):
-        p = p.strip()
-        if p.isdigit():
-            out.append(int(p))
-    return out
+    # Feature Flags
+    ENABLE_INVITES = os.getenv("ENABLE_INVITES", "true").lower() == "true"
+    ENABLE_MEME_FEED = os.getenv("ENABLE_MEME_FEED", "false").lower() == "true"
+    ENABLE_DISASTER_TOOLS = os.getenv("ENABLE_DISASTER_TOOLS", "false").lower() == "true"
 
+    # Meme Feed
+    MEME_CHANNEL_ID = int(os.getenv("MEME_CHANNEL_ID", "0"))
+    MEME_INTERVAL_MIN = int(os.getenv("MEME_INTERVAL_MIN", "120"))
 
-class BotConfig:
-    """
-    Centralized, environment-backed config with safe defaults.
-    """
-
-    def __init__(self):
-        # --- Core / AI provider ---
-        self.BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-        self.COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
-
-        self.PROVIDER = os.getenv("PROVIDER", "groq").lower()  # 'groq' | 'hf' | 'openai'
-
-        # Single-model fallback (kept for compatibility)
-        self.GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
-
-        # NEW: Dual-model setup
-        self.GROQ_MODEL_FAST = os.getenv("GROQ_MODEL_FAST", "llama-3.1-8b-instant").strip()
-        self.GROQ_MODEL_SMART = os.getenv("GROQ_MODEL_SMART", "llama-3.1-70b-versatile").strip()
-        self.AI_MODE_DEFAULT = os.getenv("AI_MODE_DEFAULT", "fast").strip().lower()  # 'fast' | 'smart'
-
-        self.HF_MODEL = os.getenv("HF_MODEL", "gpt2")
-        self.OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-        self.AI_MAX_NEW_TOKENS = _as_int(os.getenv("AI_MAX_NEW_TOKENS"), 256)
-        self.AI_TEMPERATURE = _as_float(os.getenv("AI_TEMPERATURE"), 0.7)
-
-        # System / persona prompts
-        self.SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "").strip()
-        self.PUBLIC_PERSONA_PROMPT = os.getenv("PUBLIC_PERSONA_PROMPT", "").strip()
-        self.BACKSTAGE_PERSONA_PROMPT = os.getenv("BACKSTAGE_PERSONA_PROMPT", "").strip()
-        self.MORPHEUS_STYLE_HINT = os.getenv("MORPHEUS_STYLE_HINT", "").strip()
-
-        # Greeter
-        self.GREETER_DM_PROMPT = os.getenv("GREETER_DM_PROMPT", "").strip()
-        self.GREETER_PUBLIC_PROMPT = os.getenv("GREETER_PUBLIC_PROMPT", "").strip()
-
-        # --- Owner / roles / channels (common) ---
-        self.OWNER_USER_ID = _as_int(os.getenv("OWNER_USER_ID"), 0)
-        self.TRUST_ROLE_IDS = _as_int_list(os.getenv("TRUST_ROLE_IDS", ""))   # fast-track / trusted users
-
-        self.YT_VERIFIED_ROLE_ID = _as_int(os.getenv("YT_VERIFIED_ROLE_ID"), 0)
-        self.MEMBER_ROLE_ID = _as_int(os.getenv("MEMBER_ROLE_ID"), 0)
-        self.WELCOME_CHANNEL_ID = _as_int(os.getenv("WELCOME_CHANNEL_ID"), 0)
-        self.MODLOG_CHANNEL_ID = _as_int(os.getenv("MODLOG_CHANNEL_ID"), 0)
-
-        # --- Mission / memory bridge ---
-        self.MISSION_AUTO_EXPORT_ENABLED = _as_bool(os.getenv("MISSION_AUTO_EXPORT_ENABLED"), False)
-        self.MISSION_EXPORT_INTERVAL_MIN = _as_int(os.getenv("MISSION_EXPORT_INTERVAL_MIN"), 60)
-        self.MISSION_EXPORT_PATH = os.getenv("MISSION_EXPORT_PATH", "data/mission_memory.json")
-        self.MEMORY_BRIDGE_PATH = os.getenv("MEMORY_BRIDGE_PATH", "data/mission_memory.json")
-
-        # --- Tickets ---
-        self.TICKET_HOME_CHANNEL_ID = _as_int(os.getenv("TICKET_HOME_CHANNEL_ID"), 0)
-        self.TICKET_STAFF_ROLES = _as_int_list(os.getenv("TICKET_STAFF_ROLES", ""))
-
-        # --- Moderation ---
-        self.MAX_MENTIONS = _as_int(os.getenv("MAX_MENTIONS"), 8)
-        self.SPAM_WINDOW_SECS = _as_int(os.getenv("SPAM_WINDOW_SECS"), 12)
-        self.ALLOW_INVITES = _as_bool(os.getenv("ALLOW_INVITES"), False)
-
-        # --- Presence ---
-        self.PRESENCE_INTERVAL_SEC = _as_int(os.getenv("PRESENCE_INTERVAL_SEC"), 300)
-        self.PRESENCE_MAINFRAME = os.getenv("PRESENCE_MAINFRAME", "Standing by in MAINFRAME").strip()
-        self.PRESENCE_CONSTRUCT = os.getenv("PRESENCE_CONSTRUCT", "Guiding in The Construct").strip()
-        self.PRESENCE_HAVN = os.getenv("PRESENCE_HAVN", "Keeping watch in HAVN").strip()
-
-        # --- Void pulse ---
-        self.VOID_CHANNEL_ID = _as_int(os.getenv("VOID_CHANNEL_ID"), 0)
-        self.VOID_BROADCAST_HOURS = _as_int(os.getenv("VOID_BROADCAST_HOURS"), 72)
-
-        # --- YouTube ---
-        self.YT_CHANNEL_ID = os.getenv("YT_CHANNEL_ID", "").strip()
-        self.YT_ANNOUNCE_CHANNEL_ID = _as_int(os.getenv("YT_ANNOUNCE_CHANNEL_ID"), 0)
-        self.YT_POLL_MIN = _as_int(os.getenv("YT_POLL_MIN"), 10)
-
-    def validate_config(self):
-        if not self.BOT_TOKEN:
-            raise ValueError("Missing DISCORD_BOT_TOKEN")
-        return True
+    # VoidPulse Defaults
+    VOID_COOLDOWN_HOURS = int(os.getenv("VOID_COOLDOWN_HOURS", "36"))
+    VOID_JITTER_MIN = int(os.getenv("VOID_JITTER_MIN", "45"))
+    VOID_QUIET_MIN = int(os.getenv("VOID_QUIET_MIN", "180"))
+    VOID_WINDOW_MIN = int(os.getenv("VOID_WINDOW_MIN", "120"))
+    VOID_MAX_MSGS = int(os.getenv("VOID_MAX_MSGS", "6"))
+    VOID_CHANNEL_ID = int(os.getenv("VOID_CHANNEL_ID", "0"))
