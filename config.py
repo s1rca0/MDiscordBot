@@ -1,7 +1,7 @@
 # config.py
 from __future__ import annotations
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 def _b(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
@@ -23,13 +23,13 @@ class BotConfig:
     """
 
     # ---- Discord core
-    BOT_TOKEN: str = _s("DISCORD_BOT_TOKEN")
+    BOT_TOKEN: str = _s("DISCORD_BOT_TOKEN")     # primary token (env name kept)
     COMMAND_PREFIX: str = _s("COMMAND_PREFIX", "$")
     OWNER_USER_ID: int = _i("OWNER_USER_ID", 0)
 
     # Logging: empty LOG_FILE => stdout only (best for Railway)
     LOG_LEVEL: str = _s("LOG_LEVEL", "INFO")
-    LOG_FILE: str = _s("LOG_FILE", "")         # keep empty to avoid file writes
+    LOG_FILE: str = _s("LOG_FILE", "")          # keep empty to avoid file writes
     DEBUG_MODE: bool = _b("DEBUG_MODE", False)
 
     # ---- AI / provider
@@ -45,10 +45,13 @@ class BotConfig:
     ALLOW_INVITES: bool = _b("ENABLE_INVITES", True)
     SERVER_INVITE_URL: str = _s("SERVER_INVITE_URL")  # can be empty; cogs handle it
 
-    # ---- Meme feed (disabled by default; stays stateless)
+    # ---- Meme feed (disabled by default; stateless)
     MEMES_ENABLED: bool = _b("ENABLE_MEME_FEED", False)
-    MEME_CHANNEL_ID: int = _i("MEME_CHANNEL_ID", 0)
+    MEME_CHANNEL_ID: int = _i("MEME_CHANNEL_ID", 0)   # our canonical name
     MEME_INTERVAL_MIN: int = _i("MEME_INTERVAL_MIN", 120)
+
+    # ---- Moderation (optional)
+    MAX_MENTIONS: int = _i("MAX_MENTIONS", 3)
 
     # ---- Disaster tools (disabled by default)
     DISASTER_TOOLS_ENABLED: bool = _b("ENABLE_DISASTER_TOOLS", False)
@@ -56,6 +59,7 @@ class BotConfig:
     # ---- Tickets / Support (optional; 0 means “not set”)
     TICKET_HOME_CHANNEL_ID: int = _i("TICKET_HOME_CHANNEL_ID", 0)
     SUPPORT_CHANNEL_ID: int = _i("SUPPORT_CHANNEL_ID", 0)
+    TICKET_STAFF_ROLES: list[int] = field(default_factory=list)  # e.g. [123, 456]
 
     # ---- YouTube announcements (optional)
     YT_ANNOUNCE_CHANNEL_ID: int = _i("YT_ANNOUNCE_CHANNEL_ID", 0)
@@ -87,6 +91,16 @@ class BotConfig:
     # Back-compat with older code that called validate_config()
     def validate_config(self) -> None:
         self.validate_core()
+
+    # ---------- Back-compat attribute aliases ----------
+    # Some cogs still look for these exact names; expose read-only aliases.
+    @property
+    def DISCORD_BOT_TOKEN(self) -> str:  # old name used by some modules
+        return self.BOT_TOKEN
+
+    @property
+    def MEMES_CHANNEL_ID(self) -> int:   # old pluralized name some cogs expect
+        return self.MEME_CHANNEL_ID
 
 # module-level instance used everywhere
 cfg = BotConfig()

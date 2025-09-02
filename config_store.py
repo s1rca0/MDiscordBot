@@ -1,42 +1,42 @@
 # config_store.py
-from __future__ import annotations
+"""
+Zero-dependency, volume-free config overlay.
 
-import json
+- Reads from env for anything that already exists.
+- Lets cogs write ephemeral overrides in-memory (Hobby plan safe).
+- `setup_cog.py` calls store.set(...), store.get(...), store.all()
+- `BotConfig.reload_overrides(store.all())` will use these until restart.
+"""
+
+from __future__ import annotations
 import os
 from typing import Any, Dict
 
-RUNTIME_CONFIG_PATH = os.getenv("RUNTIME_CONFIG_PATH", "data/runtime_config.json")
+
+class _MemoryStore:
+    def __init__(self) -> None:
+        # In-memory only (lost on restart – perfect for Railway Hobby)
+        self._overrides: Dict[str, str] = {}
+
+    # Read: in-memory overrides win, else fall back to env, else default
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in self._overrides:
+            return self._overrides[key]
+        val = os.getenv(key)
+        return val if val is not None else default
+
+    # Write: store as string (since envs are strings)
+    def set(self, key: str, value: Any) -> None:
+        self._overrides[key] = "" if value is None else str(value)
+
+    # Bulk view of overrides (used by BotConfig.reload_overrides)
+    def all(self) -> Dict[str, str]:
+        return dict(self._overrides)
+
+    # Helpful utility if you ever want to clear in-memory values
+    def clear(self) -> None:
+        self._overrides.clear()
 
 
-def _ensure_dir(path: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-
-def load_overrides() -> Dict[str, Any]:
-    """Return saved overrides (empty dict if none)."""
-    try:
-        with open(RUNTIME_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f) or {}
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-
-
-def save_overrides(d: Dict[str, Any]) -> None:
-    """Persist overrides to disk (best-effort)."""
-    try:
-        _ensure_dir(RUNTIME_CONFIG_PATH)
-        with open(RUNTIME_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2, ensure_ascii=False)
-    except Exception:
-        # In production we keep this silent—runtime will still have in-memory values.
-        pass
-
-
-def set_override(key: str, value: Any) -> Dict[str, Any]:
-    """Set one key and save; returns the latest dict."""
-    d = load_overrides()
-    d[key] = value
-    save_overrides(d)
-    return d
+# This is what cogs import: `from config_store import store`
+store = _MemoryStore()
