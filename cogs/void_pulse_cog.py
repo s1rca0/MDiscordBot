@@ -1,321 +1,157 @@
+# cogs/void_pulse_cog.py
 import os
-import json
-import time
 import random
-from typing import Dict, Optional, List
+from datetime import timedelta
+from typing import Optional, Tuple
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 
-DATA_DIR = "data"
-STATE_PATH = os.path.join(DATA_DIR, "void_pulse_state.json")
-GCFG_PATH  = os.path.join(DATA_DIR, "guild_config.json")  # reuse if present
+from config import BotConfig
+from cogs.utils.morpheus_voice import mk_embed, speak
 
-def _env_bool(name: str, default: bool) -> bool:
-    v = os.getenv(name, str(default))
-    return str(v).lower() in ("1", "true", "yes", "y", "on")
+cfg = BotConfig()
 
-OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0") or 0)
 
-# --------- Defaults / env overrides ----------
-PULSE_ENABLE_DEFAULT         = _env_bool("VOID_PULSE_ENABLE", True)
-MIN_QUIET_MINUTES_DEFAULT    = int(os.getenv("VOID_MIN_QUIET_MINUTES", "180"))  # 3h inactivity
-MIN_GAP_HOURS_DEFAULT        = int(os.getenv("VOID_MIN_GAP_HOURS", "36"))       # 1.5 days between pulses
-JITTER_MINUTES_DEFAULT       = int(os.getenv("VOID_JITTER_MINUTES", "45"))      # ± up to 45m
-WINDOW_MINUTES_DEFAULT       = int(os.getenv("VOID_WINDOW_MINUTES", "120"))     # lookback window for “quiet”
-MIN_MESSAGES_WINDOW_DEFAULT  = int(os.getenv("VOID_MIN_MESSAGES_WINDOW", "6"))  # if <= this, consider “quiet”
-CHECK_EVERY_SECONDS          = int(os.getenv("VOID_CHECK_PERIOD_SEC", "300"))   # loop every 5m
+def _jittered_hours(base: int, jitter: int) -> int:
+    if jitter <= 0:
+        return base
+    lo = max(1, base - jitter)
+    hi = base + jitter
+    return random.randint(lo, hi)
 
-MODLOG_CHANNEL_ID            = int(os.getenv("MODLOG_CHANNEL_ID", "0") or 0)
 
-# Optional assets (we fall back gracefully)
-ASSET_GIF_CANDIDATES = [
-    # prefer your animated transmission if present
-    "attached_assets/morpheus_transmission_v3.gif",
-    "attached_assets/morpheus_transmission.gif",
-]
-ASSET_IMAGE_FALLBACK = "attached_assets/Morpheus_PFP.png"
-
-# --------- tiny stores ----------
-def _ensure_dir():
-    if not os.path.isdir(DATA_DIR):
-        os.makedirs(DATA_DIR, exist_ok=True)
-
-def _load_state() -> Dict:
-    _ensure_dir()
-    if not os.path.isfile(STATE_PATH):
-        return {}
-    try:
-        with open(STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def _save_state(d: Dict):
-    _ensure_dir()
-    with open(STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-
-def _load_gcfg() -> Dict:
-    if not os.path.isfile(GCFG_PATH):
-        return {}
-    try:
-        with open(GCFG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def _set_gcfg(gid: int, patch: Dict):
-    gcfg = _load_gcfg()
-    g = gcfg.get(str(gid), {})
-    g.update(patch)
-    gcfg[str(gid)] = g
-    _ensure_dir()
-    with open(GCFG_PATH, "w", encoding="utf-8") as f:
-        json.dump(gcfg, f, ensure_ascii=False, indent=2)
-
-def _get_void_channel_id(gid: int) -> int:
-    # precedence: env → guild_config.json “void_channel_id”
-    env = int(os.getenv("VOID_CHANNEL_ID", "0") or 0)
-    if env:
-        return env
-    g = _load_gcfg().get(str(gid), {})
-    return int(g.get("void_channel_id", 0) or 0)
-
-def _set_void_channel_id(gid: int, cid: int):
-    _set_gcfg(gid, {"void_channel_id": int(cid)})
-
-# --------- helpers ----------
-def _is_admin_or_owner(user: discord.abc.User) -> bool:
-    if OWNER_USER_ID and int(user.id) == int(OWNER_USER_ID):
-        return True
-    if isinstance(user, discord.Member):
-        return bool(user.guild_permissions.administrator)
-    return False
-
-def _choose_asset() -> Optional[discord.File]:
-    # Prefer first existing GIF; else fallback to image; else None
-    try:
-        for p in ASSET_GIF_CANDIDATES:
-            if os.path.isfile(p):
-                return discord.File(p, filename=os.path.basename(p))
-        if os.path.isfile(ASSET_IMAGE_FALLBACK):
-            return discord.File(ASSET_IMAGE_FALLBACK, filename=os.path.basename(ASSET_IMAGE_FALLBACK))
-    except Exception:
-        pass
-    return None
-
-PULSE_LINES: List[str] = [
-    "⟂ signal breach: a thread in the multiverse tugged back. listen close.",
-    "the Void hums. a door you’ve missed is half-open.",
-    "static clears… {ping} do you hear that? HAVN isn’t far.",
-    "a ripple crosses frames. someone just rewound fate.",
-    "trace confirmed. a path to **HAVN** flickers, then fades. were you watching?",
-    "Morpheus intercept: you’re not lost—just zoomed out. re-enter the frame.",
-]
-
-class VoidPulseCog(commands.Cog):
-    """Posts a void transmission when #void goes quiet long enough, with jitter & cooldown."""
+class VoidPulseCog(commands.Cog, name="Void Pulse"):
+    """
+    Posts an atmospheric ping in a chosen channel when the server has been quiet.
+    Keeps Morpheus' "alive" vibe without spamming.
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._task_loop.start()
+        # defaults (env-overrideable via Railway/Replit)
+        self.enabled = bool(os.getenv("VOIDPULSE_ENABLE", "true").lower() in ("1", "true", "yes"))
+        self.channel_id = int(os.getenv("VOID_CHANNEL_ID", "0"))  # set via /voidpulse_set_channel
+        self.cooldown_hours = int(os.getenv("VOIDPULSE_COOLDOWN_HOURS", "36"))
+        self.cooldown_jitter = int(os.getenv("VOIDPULSE_COOLDOWN_JITTER", "45"))  # +/- hours
+        self.quiet_threshold_min = int(os.getenv("VOIDPULSE_QUIET_THRESHOLD_MIN", "180"))  # last non-bot msg
+        self.scan_window_min = int(os.getenv("VOIDPULSE_SCAN_WINDOW_MIN", "120"))  # count-only window
+        self.scan_window_max_msgs = int(os.getenv("VOIDPULSE_SCAN_WINDOW_MAXMSGS", "6"))
+        self.last_pulse_ts: Optional[discord.utils.utcnow] = None
 
-    def cog_unload(self):
-        self._task_loop.cancel()
+    # ---------- Admin commands ----------
+    @app_commands.command(name="voidpulse_status", description="Show current VoidPulse configuration and recent state.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voidpulse_status(self, interaction: discord.Interaction):
+        ch = self._channel(interaction.guild)
+        desc = (
+            f"**Enabled:** `{self.enabled}`\n"
+            f"**Channel:** {ch.mention if ch else '`unset`'}\n"
+            f"**Cooldown (hours):** `{self.cooldown_hours}` | **Jitter (min):** `{self.cooldown_jitter}`\n"
+            f"**Quiet threshold (min):** `{self.quiet_threshold_min}`\n"
+            f"**Window (min):** `{self.scan_window_min}`, **Quiet if ≤ {self.scan_window_max_msgs} msgs**\n"
+            f"**Last pulse:** `{int(self.last_pulse_ts.timestamp()) if self.last_pulse_ts else '—'}` (unix)\n"
+            "_No message content is stored—only counts/timestamps._"
+        )
+        await interaction.response.send_message(embed=mk_embed("VoidPulse", desc), ephemeral=True)
 
-    @tasks.loop(seconds=CHECK_EVERY_SECONDS)
-    async def _task_loop(self):
-        # Iterate each guild the bot is in
-        for guild in list(self.bot.guilds):
-            try:
-                await self._maybe_pulse(guild)
-            except Exception as e:
-                # soft log to modlog if configured
-                if MODLOG_CHANNEL_ID:
-                    chan = guild.get_channel(MODLOG_CHANNEL_ID)
-                    if isinstance(chan, discord.TextChannel):
-                        try:
-                            await chan.send(f"VoidPulse error: `{e.__class__.__name__}`")
-                        except Exception:
-                            pass
-
-    @_task_loop.before_loop
-    async def _before(self):
-        await self.bot.wait_until_ready()
-
-    async def _maybe_pulse(self, guild: discord.Guild):
-        gcfg = _load_gcfg().get(str(guild.id), {})
-        enabled = bool(gcfg.get("void_pulse_enable", PULSE_ENABLE_DEFAULT))
-        if not enabled:
-            return
-
-        void_id = _get_void_channel_id(guild.id)
-        if not void_id:
-            # Try find by name as a convenience
-            void_chan = discord.utils.get(guild.text_channels, name="void")
-        else:
-            void_chan = guild.get_channel(void_id)
-
-        if not isinstance(void_chan, discord.TextChannel):
-            return
-
-        # Permissions check
-        me = guild.me
-        if not me:
-            return
-        perms = void_chan.permissions_for(me)
-        if not perms.read_message_history or not perms.send_messages:
-            return
-
-        now = time.time()
-        state = _load_state()
-        gstate = state.get(str(guild.id), {})
-        last_ts = float(gstate.get("last_pulse_ts", 0))
-
-        min_gap_hours   = int(gcfg.get("void_min_gap_hours", MIN_GAP_HOURS_DEFAULT))
-        jitter_minutes  = int(gcfg.get("void_jitter_minutes", JITTER_MINUTES_DEFAULT))
-        min_quiet_min   = int(gcfg.get("void_min_quiet_minutes", MIN_QUIET_MINUTES_DEFAULT))
-        window_minutes  = int(gcfg.get("void_window_minutes", WINDOW_MINUTES_DEFAULT))
-        min_msgs_needed = int(gcfg.get("void_min_messages_window", MIN_MESSAGES_WINDOW_DEFAULT))
-
-        # Enforce cooldown
-        if last_ts and (now - last_ts) < (min_gap_hours * 3600):
-            return
-
-        # Add jitter (unique per cycle) so pulses don't feel clockwork
-        jitter = random.randint(-jitter_minutes, jitter_minutes) * 60
-        if last_ts and (now - last_ts + jitter) < (min_gap_hours * 3600):
-            return
-
-        # Check channel activity
-        cutoff_quiet = discord.utils.utcnow().timestamp() - (min_quiet_min * 60)
-        cutoff_window = discord.utils.utcnow().timestamp() - (window_minutes * 60)
-
-        # 1) Most recent message time
-        try:
-            async for msg in void_chan.history(limit=1, oldest_first=False):
-                last_msg_ts = msg.created_at.timestamp()
-                break
-            else:
-                last_msg_ts = 0.0
-        except Exception:
-            return
-
-        # If recent chatter, skip
-        if last_msg_ts and last_msg_ts > cutoff_quiet:
-            return
-
-        # 2) Count messages in the broader window
-        msg_count = 0
-        try:
-            async for msg in void_chan.history(limit=400, oldest_first=False):
-                if msg.created_at.timestamp() < cutoff_window:
-                    break
-                if msg.author.bot:
-                    continue
-                msg_count += 1
-        except Exception:
-            return
-
-        if msg_count > min_msgs_needed:
-            # window has enough activity; no pulse
-            return
-
-        # Compose the pulse
-        line = random.choice(PULSE_LINES)
-        # Optional: soft “ping” by mentioning the channel (no @everyone)
-        content = line.format(ping=void_chan.mention)
-
-        embed = discord.Embed(
-            title="— transmission from the Void —",
-            description=content,
-            color=discord.Color.dark_teal()
-        ).set_footer(text="signal strength: variable")
-
-        file = _choose_asset()
-
-        try:
-            await void_chan.send(embed=embed, file=file if file else discord.utils.MISSING)
-        except Exception:
-            return
-
-        # Persist last pulse time
-        gstate["last_pulse_ts"] = now
-        state[str(guild.id)] = gstate
-        _save_state(state)
-
-    # --------- slash commands ----------
-    @app_commands.command(name="voidpulse_status", description="Show current Void pulse settings & last pulse.")
-    async def voidpulse_status(self, inter: discord.Interaction):
-        if inter.guild is None:
-            await inter.response.send_message("Run in a server.", ephemeral=True)
-            return
-        gcfg = _load_gcfg().get(str(inter.guild.id), {})
-        state = _load_state().get(str(inter.guild.id), {})
-        last_ts = float(state.get("last_pulse_ts", 0))
-
-        void_id = _get_void_channel_id(inter.guild.id)
-        void_chan = inter.guild.get_channel(void_id) if void_id else discord.utils.get(inter.guild.text_channels, name="void")
-
-        def gv(k, dft):
-            return gcfg.get(k, dft)
-
-        await inter.response.send_message(
-            "**VoidPulse**\n"
-            f"- Enabled: `{bool(gcfg.get('void_pulse_enable', PULSE_ENABLE_DEFAULT))}`\n"
-            f"- Channel: {void_chan.mention if isinstance(void_chan, discord.TextChannel) else '(not set)'}\n"
-            f"- Cooldown (hours): `{gv('void_min_gap_hours', MIN_GAP_HOURS_DEFAULT)}`  | Jitter (min): `{gv('void_jitter_minutes', JITTER_MINUTES_DEFAULT)}`\n"
-            f"- Quiet threshold (min): `{gv('void_min_quiet_minutes', MIN_QUIET_MINUTES_DEFAULT)}`\n"
-            f"- Window (min): `{gv('void_window_minutes', WINDOW_MINUTES_DEFAULT)}`, Quiet if ≤ `{gv('void_min_messages_window', MIN_MESSAGES_WINDOW_DEFAULT)}` msgs\n"
-            f"- Last pulse: `{int(last_ts)}` (unix)\n"
-            "_No message content is stored—only counts/timestamps._",
-            ephemeral=True
+    @app_commands.command(name="voidpulse_set_channel", description="Set the channel used for VoidPulse.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voidpulse_set_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        self.channel_id = channel.id
+        await interaction.response.send_message(
+            embed=mk_embed("VoidPulse", f"Channel set to {channel.mention}"), ephemeral=True
         )
 
-    @app_commands.command(name="voidpulse_toggle", description="(Admin/Owner) Enable/disable Void pulse.")
-    async def voidpulse_toggle(self, inter: discord.Interaction, enabled: bool):
-        if inter.guild is None:
-            await inter.response.send_message("Run in a server.", ephemeral=True)
-            return
-        if not _is_admin_or_owner(inter.user):
-            await inter.response.send_message("Admin/Owner only.", ephemeral=True)
-            return
-        _set_gcfg(inter.guild.id, {"void_pulse_enable": bool(enabled)})
-        await inter.response.send_message(f"VoidPulse enabled: `{enabled}`", ephemeral=True)
+    @app_commands.command(name="voidpulse_toggle", description="Enable/disable VoidPulse.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voidpulse_toggle(self, interaction: discord.Interaction, enable: Optional[bool] = None):
+        self.enabled = (not self.enabled) if enable is None else enable
+        state = "enabled" if self.enabled else "disabled"
+        await interaction.response.send_message(
+            embed=mk_embed("VoidPulse", f"VoidPulse **{state}**."), ephemeral=True
+        )
 
-    @app_commands.command(name="voidpulse_set_channel", description="(Admin/Owner) Set the #void channel to watch.")
-    async def voidpulse_set_channel(self, inter: discord.Interaction, channel: discord.TextChannel):
-        if inter.guild is None:
-            await inter.response.send_message("Run in a server.", ephemeral=True)
-            return
-        if not _is_admin_or_owner(inter.user):
-            await inter.response.send_message("Admin/Owner only.", ephemeral=True)
-            return
-        _set_void_channel_id(inter.guild.id, channel.id)
-        await inter.response.send_message(f"VoidPulse channel set to {channel.mention}", ephemeral=True)
+    @app_commands.command(name="voidpulse_nudge", description="Force a one-off pulse check now.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voidpulse_nudge(self, interaction: discord.Interaction):
+        await interaction.response.send_message(embed=mk_embed("VoidPulse", "Attempting a pulse…"), ephemeral=True)
+        ok, why = await self._maybe_pulse(interaction.guild)
+        msg = "Done." if ok else f"No pulse: {why or 'conditions not met'}"
+        await interaction.followup.send(embed=mk_embed("VoidPulse", msg), ephemeral=True)
 
-    @app_commands.command(name="voidpulse_nudge", description="(Admin/Owner) Attempt a pulse now (ignores cooldown).")
-    async def voidpulse_nudge(self, inter: discord.Interaction):
-        if inter.guild is None:
-            await inter.response.send_message("Run in a server.", ephemeral=True)
-            return
-        if not _is_admin_or_owner(inter.user):
-            await inter.response.send_message("Admin/Owner only.", ephemeral=True)
-            return
-        # Force: clear last_pulse_ts then try once
-        state = _load_state()
-        gstate = state.get(str(inter.guild.id), {})
-        gstate["last_pulse_ts"] = 0
-        state[str(inter.guild.id)] = gstate
-        _save_state(state)
-        await inter.response.send_message("Attempting a pulse…", ephemeral=True)
+    # ---------- Internals ----------
+    def _channel(self, guild: Optional[discord.Guild]) -> Optional[discord.TextChannel]:
+        if not guild or not self.channel_id:
+            return None
+        return guild.get_channel(self.channel_id)
+
+    async def _maybe_pulse(self, guild: Optional[discord.Guild]) -> Tuple[bool, Optional[str]]:
+        if not guild or not self.enabled:
+            return False, "disabled"
+
+        ch = self._channel(guild)
+        if not ch:
+            return False, "no channel set"
+
+        # Cooldown
+        if self.last_pulse_ts:
+            elapsed = (discord.utils.utcnow() - self.last_pulse_ts).total_seconds() / 3600
+            if elapsed < _jittered_hours(self.cooldown_hours, self.cooldown_jitter):
+                return False, "cooldown"
+
+        ok, why = await self._is_quiet(ch)
+        if not ok:
+            return False, why
+
+        # Post the “alive” signal
+        await ch.send(speak("[signal] The Void hums tonight. Those who listen may hear the door unlatch."))
+        self.last_pulse_ts = discord.utils.utcnow()
+        return True, None
+
+    async def _is_quiet(self, channel: discord.TextChannel) -> Tuple[bool, str]:
+        """
+        Quiet == (last non-bot user message older than quiet_threshold)
+                 AND (message count within scan window <= max msgs)
+        """
+        quiet_thresh = self.quiet_threshold_min
+        window_min = self.scan_window_min
+        max_msgs = self.scan_window_max_msgs
+
+        now = discord.utils.utcnow()
+        since_ts = now - timedelta(minutes=max(quiet_thresh, window_min))
+
+        last_user_msg_age_min: Optional[int] = None
+        count_in_window = 0
+
         try:
-            await self._maybe_pulse(inter.guild)
-            await inter.followup.send("Done.", ephemeral=True)
-        except Exception as e:
-            await inter.followup.send(f"Failed: {e.__class__.__name__}", ephemeral=True)
+            async for msg in channel.history(limit=200, after=since_ts, oldest_first=False):
+                # Count all messages in window
+                age_min = int(((now - msg.created_at).total_seconds()) // 60)
+                if age_min <= window_min:
+                    count_in_window += 1
+
+                # Track most recent non-bot author age for quiet threshold
+                if (not msg.author.bot) and last_user_msg_age_min is None:
+                    last_user_msg_age_min = age_min
+        except discord.Forbidden:
+            # conservative: never pulse if we can’t read history
+            return False, "insufficient permissions"
+
+        if last_user_msg_age_min is None:
+            # none found → treat as very old
+            last_user_msg_age_min = 10**6
+
+        cond_gap = last_user_msg_age_min >= quiet_thresh
+        cond_volume = count_in_window <= max_msgs
+
+        if not cond_gap:
+            return False, f"user gap {last_user_msg_age_min}m < {quiet_thresh}m"
+        if not cond_volume:
+            return False, f"window msgs {count_in_window} > {max_msgs}"
+
+        return True, "quiet"
 
 
 async def setup(bot: commands.Bot):

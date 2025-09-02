@@ -1,150 +1,104 @@
 # ai_provider.py
-import os, asyncio, time
-from typing import List, Dict
+from __future__ import annotations
+import os
+from typing import List, Dict, Any
 
-# ---- Env --------------------------------------------------------------------
-PROVIDER     = (os.getenv("PROVIDER", "hf") or "").strip().lower()
-HF_MODEL     = (os.getenv("HF_MODEL", "gpt2") or "").strip()
-HF_TOKEN     = (os.getenv("HF_API_TOKEN", "") or "").strip()
-OPENAI_KEY   = (os.getenv("OPENAI_API_KEY", "") or "").strip()
-GROQ_KEY     = (os.getenv("GROQ_API_KEY", "") or "").strip()
-GROQ_MODEL   = (os.getenv("GROQ_MODEL", "llama-3.1-8b-instant") or "").strip()
+from config import BotConfig
+from ai_mode import get_mode
 
-print(f"DEBUG PROVIDER={PROVIDER} HF_MODEL={HF_MODEL!r} GROQ_MODEL={GROQ_MODEL!r}")
+cfg = BotConfig()
 
-def build_prompt(system: str, messages: List[Dict[str, str]]) -> str:
-    return (
-        f"System: {system}\n"
-        + "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
-        + "\nAssistant:"
-    )
+# Lazy clients (loaded only if used)
+_groq_client = None
+_openai_client = None
 
-# -----------------------------------------------------------------------------
-async def ai_reply(system: str, messages: List[Dict[str, str]],
-                   max_new_tokens: int = 256, temperature: float = 0.7) -> str:
-    # ---------------- OpenAI path (optional) ---------------------------------
-    if PROVIDER == "openai" and OPENAI_KEY:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_KEY)
-            msgs = [{"role": "system", "content": system}] + messages
-            r = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=msgs,
-                max_tokens=max_new_tokens,
-                temperature=temperature,
-            )
-            return (r.choices[0].message.content or "").strip()
-        except Exception as e:
-            return f"(OpenAI error) {type(e).__name__}: {str(e)[:160]}"
+def _groq():
+    global _groq_client
+    if _groq_client is None:
+        from groq import Groq
+        _groq_client = Groq(api_key=os.getenv("GROQ_API_KEY", "").strip() or None)
+    return _groq_client
 
-    # ---------------- GROQ path (recommended) --------------------------------
-    if PROVIDER == "groq" and GROQ_KEY:
-        try:
-            # Uses Groq's OpenAI-compatible client
-            from groq import Groq
-            client = Groq(api_key=GROQ_KEY)
-            msgs = [{"role": "system", "content": system}] + messages
-            resp = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=GROQ_MODEL,
-                messages=msgs,
-                max_tokens=max_new_tokens,
-                temperature=temperature,
-            )
-            return (resp.choices[0].message.content or "").strip()
-        except Exception as e:
-            return f"(Groq error) {type(e).__name__}: {str(e)[:160]}"
+def _openai():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "").strip() or None)
+    return _openai_client
 
-    # ---------------- Hugging Face path (fallback) ---------------------------
-    prompt = build_prompt(system, messages)
+def current_model_name() -> str:
+    """
+    Decide the LLM name based on provider + runtime mode.
+    - For Groq: choose fast/smart from env secrets.
+    - For others: keep existing single-model env (compat).
+    """
+    if cfg.PROVIDER == "groq":
+        mode = get_mode(cfg.AI_MODE_DEFAULT)
+        if mode == "smart":
+            return cfg.GROQ_MODEL_SMART or cfg.GROQ_MODEL or "llama-3.1-70b-versatile"
+        return cfg.GROQ_MODEL_FAST or cfg.GROQ_MODEL or "llama-3.1-8b-instant"
 
-    # 1) Try hub client first
-    try:
-        from huggingface_hub import InferenceClient
-        client = InferenceClient(token=(HF_TOKEN or None))
-        loop = asyncio.get_running_loop()
+    if cfg.PROVIDER == "openai":
+        return cfg.OPENAI_MODEL or "gpt-4o-mini"
 
-        def _call_client():
-            try:
-                return client.text_generation(
-                    prompt,
-                    model=HF_MODEL,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    do_sample=True,
-                    return_full_text=False,
-                    stream=False,
-                )
-            except StopIteration:
-                return ""
-            except Exception as e:
-                return f"__HF_CLIENT_ERROR__ {type(e).__name__}: {str(e)[:160]}"
+    if cfg.PROVIDER == "hf":
+        return cfg.HF_MODEL or "gpt2"
 
-        text = await loop.run_in_executor(None, _call_client)
+    # default fallback
+    return cfg.GROQ_MODEL_FAST or cfg.GROQ_MODEL or "llama-3.1-8b-instant"
 
-        if isinstance(text, str) and text.startswith("__HF_CLIENT_ERROR__"):
-            raise RuntimeError(text)
 
-        if isinstance(text, list) and text and isinstance(text[0], dict) and "generated_text" in text[0]:
-            text = text[0]["generated_text"]
-        elif isinstance(text, dict) and "generated_text" in text:
-            text = text["generated_text"]
+def chat_completion(messages: List[Dict[str, str]], temperature: float | None = None, max_tokens: int | None = None) -> str:
+    """
+    Minimal chat wrapper used by the bot's /ask (and others).
+    """
+    model = current_model_name()
+    temp = cfg.AI_TEMPERATURE if temperature is None else temperature
+    mxt = cfg.AI_MAX_NEW_TOKENS if max_tokens is None else max_tokens
 
-        if not text or not str(text).strip():
-            raise RuntimeError("empty-from-client")
+    if cfg.PROVIDER == "groq":
+        client = _groq()
+        if client is None:
+            return "GROQ_API_KEY is missing."
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=float(temp),
+            max_tokens=int(mxt),
+        )
+        return resp.choices[0].message.content or ""
 
-        return str(text).strip()
+    if cfg.PROVIDER == "openai":
+        client = _openai()
+        if client is None:
+            return "OPENAI_API_KEY is missing."
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=float(temp),
+            max_tokens=int(mxt),
+        )
+        return resp.choices[0].message["content"] or ""
 
-    except Exception:
-        # 2) REST fallback with no-auth for public models (prevents 401 loop)
-        try:
-            import requests
-        except Exception as e:
-            return f"(HF REST import error) {type(e).__name__}: {str(e)[:160]}"
+    # Hugging Face (very minimal, text-generation style)
+    if cfg.PROVIDER == "hf":
+        import requests
+        api = os.getenv("HF_API_URL", "").strip()
+        token = os.getenv("HF_API_KEY", "").strip()
+        if not api or not token:
+            return "HF_API_URL or HF_API_KEY is missing."
+        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        headers = {"Authorization": f"Bearer {token}"}
+        payload = {"inputs": prompt, "parameters": {"temperature": float(temp), "max_new_tokens": int(mxt)}}
+        r = requests.post(api, headers=headers, json=payload, timeout=120)
+        r.raise_for_status()
+        data = r.json()
+        # Try common HF output shapes:
+        if isinstance(data, list) and data and "generated_text" in data[0]:
+            out = data[0]["generated_text"]
+            return out.split("assistant:", 1)[-1].strip() if "assistant:" in out else out
+        if isinstance(data, dict) and "generated_text" in data:
+            return str(data["generated_text"])
+        return str(data)
 
-        url = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-        headers = {"Content-Type": "application/json"}  # FORCE no auth to avoid 401s
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-                "return_full_text": False,
-            },
-            "options": {"wait_for_model": True}
-        }
-
-        last_err = None
-        for attempt in range(4):
-            try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=90)
-                code = resp.status_code
-                if code in (200, 201):
-                    try:
-                        js = resp.json()
-                    except Exception:
-                        js = resp.text
-
-                    if isinstance(js, list) and js and "generated_text" in js[0]:
-                        return (js[0]["generated_text"] or "").strip()
-                    if isinstance(js, dict) and "generated_text" in js:
-                        return (js["generated_text"] or "").strip()
-                    if isinstance(js, str):
-                        s = js.strip()
-                        return s if s else "…"
-                    return str(js)[:500] or "…"
-
-                if code == 503:
-                    time.sleep(2 + attempt * 2)
-                    continue
-
-                return f"(HF REST {code}) {resp.text[:300]}"
-
-            except Exception as e:
-                last_err = e
-                time.sleep(2 + attempt * 2)
-
-        if last_err:
-            return f"(HF REST error) {type(last_err).__name__}: {str(last_err)[:160]}"
-        return "(HF REST error) No response after retries"
+    return "Provider not configured."

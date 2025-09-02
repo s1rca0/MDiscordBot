@@ -38,8 +38,17 @@ class BotConfig:
         # --- Core / AI provider ---
         self.BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
         self.COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
+
         self.PROVIDER = os.getenv("PROVIDER", "groq").lower()  # 'groq' | 'hf' | 'openai'
-        self.GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+
+        # Single-model fallback (kept for compatibility)
+        self.GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
+
+        # NEW: Dual-model setup
+        self.GROQ_MODEL_FAST = os.getenv("GROQ_MODEL_FAST", "llama-3.1-8b-instant").strip()
+        self.GROQ_MODEL_SMART = os.getenv("GROQ_MODEL_SMART", "llama-3.1-70b-versatile").strip()
+        self.AI_MODE_DEFAULT = os.getenv("AI_MODE_DEFAULT", "fast").strip().lower()  # 'fast' | 'smart'
+
         self.HF_MODEL = os.getenv("HF_MODEL", "gpt2")
         self.OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
@@ -58,10 +67,10 @@ class BotConfig:
 
         # --- Owner / roles / channels (common) ---
         self.OWNER_USER_ID = _as_int(os.getenv("OWNER_USER_ID"), 0)
-        self.TRUST_ROLE_IDS = _as_int_list(os.getenv("TRUST_ROLE_IDS", ""))  # fast-track / trusted users
+        self.TRUST_ROLE_IDS = _as_int_list(os.getenv("TRUST_ROLE_IDS", ""))   # fast-track / trusted users
 
         self.YT_VERIFIED_ROLE_ID = _as_int(os.getenv("YT_VERIFIED_ROLE_ID"), 0)
-        self.MEMBER_ROLE_ID = _as_int(os.getenv("MEMBER_ROLE_ID"), 0)       # “Members / The Construct”
+        self.MEMBER_ROLE_ID = _as_int(os.getenv("MEMBER_ROLE_ID"), 0)
         self.WELCOME_CHANNEL_ID = _as_int(os.getenv("WELCOME_CHANNEL_ID"), 0)
         self.MODLOG_CHANNEL_ID = _as_int(os.getenv("MODLOG_CHANNEL_ID"), 0)
 
@@ -71,32 +80,26 @@ class BotConfig:
         self.MISSION_EXPORT_PATH = os.getenv("MISSION_EXPORT_PATH", "data/mission_memory.json")
         self.MEMORY_BRIDGE_PATH = os.getenv("MEMORY_BRIDGE_PATH", "data/mission_memory.json")
 
-        # --- Tickets (tickets_cog) ---
+        # --- Tickets ---
         self.TICKET_HOME_CHANNEL_ID = _as_int(os.getenv("TICKET_HOME_CHANNEL_ID"), 0)
         self.TICKET_STAFF_ROLES = _as_int_list(os.getenv("TICKET_STAFF_ROLES", ""))
 
-        # --- Moderation (moderation_cog) ---
+        # --- Moderation ---
         self.MAX_MENTIONS = _as_int(os.getenv("MAX_MENTIONS"), 8)
         self.SPAM_WINDOW_SECS = _as_int(os.getenv("SPAM_WINDOW_SECS"), 12)
-        self.SPAM_MAX_MSGS = _as_int(os.getenv("SPAM_MAX_MSGS"), 5)  # <-- added default
         self.ALLOW_INVITES = _as_bool(os.getenv("ALLOW_INVITES"), False)
-        self.AUTOMOD_REGEX = os.getenv("AUTOMOD_REGEX", "").strip()  # <-- added default (comma-separated)
-        # Example: r"(?i)\bslur\b",r"https?://bad-site\.tld"
 
-        # Strike policy thresholds: "3:timeout:30,5:kick,7:ban"
-        self.STRIKE_THRESHOLDS = os.getenv("STRIKE_THRESHOLDS", "3:timeout:30,5:kick,7:ban").strip()  # <-- added
-
-        # --- Presence (presence_cog) ---
+        # --- Presence ---
         self.PRESENCE_INTERVAL_SEC = _as_int(os.getenv("PRESENCE_INTERVAL_SEC"), 300)
         self.PRESENCE_MAINFRAME = os.getenv("PRESENCE_MAINFRAME", "Standing by in MAINFRAME").strip()
         self.PRESENCE_CONSTRUCT = os.getenv("PRESENCE_CONSTRUCT", "Guiding in The Construct").strip()
         self.PRESENCE_HAVN = os.getenv("PRESENCE_HAVN", "Keeping watch in HAVN").strip()
 
-        # --- Void pulse (void_pulse_cog) ---
+        # --- Void pulse ---
         self.VOID_CHANNEL_ID = _as_int(os.getenv("VOID_CHANNEL_ID"), 0)
         self.VOID_BROADCAST_HOURS = _as_int(os.getenv("VOID_BROADCAST_HOURS"), 72)
 
-        # --- YouTube (youtube & yt_announcer) ---
+        # --- YouTube ---
         self.YT_CHANNEL_ID = os.getenv("YT_CHANNEL_ID", "").strip()
         self.YT_ANNOUNCE_CHANNEL_ID = _as_int(os.getenv("YT_ANNOUNCE_CHANNEL_ID"), 0)
         self.YT_POLL_MIN = _as_int(os.getenv("YT_POLL_MIN"), 10)
