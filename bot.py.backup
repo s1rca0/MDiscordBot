@@ -53,7 +53,7 @@ class DiscordBot:
                 log.warning("Slash command sync failed: %s", e)
             log.info("✅ Logged in as %s (%s)", self.bot.user, self.bot.user.id)
 
-        @self.bot.event
+      #  @self.bot.event
         async def on_member_join(member: discord.Member):
             # Greet publicly if possible
             ch = member.guild.system_channel

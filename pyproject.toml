@@ -12,9 +12,11 @@ dependencies = [
   "openai>=1.40.0", # safe to keep; only used if PROVIDER=openai
   # "psutil>=7.0.0",        # uncomment only if you actually use it
   "flask>=3.0.0", # web server for hosting
-  "huggingface_hub>=0.23.0", # HF API
+  "huggingface_hub>=0.25.2", # HF API
   "watchdog>=6.0.0",
   "psutil>=7.0.0",
+  "groq>=0.9.0",
+  "cryptography>=42.0.0",
 ]
 
 # Optional: handy dev tools (remove if you don't want them)
@@ -28,7 +30,7 @@ dev = [
 # uv is Replit’s package manager; keep this minimal and clear
 [tool.uv]
 # Constrain Python for reproducibility (adjust if you change Replit’s runtime)
-constraint = "python>=3.11,<3.12"
+
 
 # If you ever need to install from Git or a private index, you can add sources:
 # [tool.uv.sources]

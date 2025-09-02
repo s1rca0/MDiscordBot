@@ -1,107 +1,107 @@
-"""
-Bot Configuration
-Configuration settings and environment variable management.
-"""
-
+# config.py
 import os
-from dotenv import load_dotenv
 
-# Load environment variables from .env file (local dev)
-load_dotenv()
 
-def _as_bool(val: str, default: bool = False) -> bool:
-    if val is None:
+def _as_bool(v, default=False):
+    if v is None:
         return default
-    return str(val).strip().lower() in {"1", "true", "yes", "y", "on"}
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
-def _as_int(val: str, default: int) -> int:
+def _as_int(v, default=0):
     try:
-        return int(str(val).strip(), 0)  # supports decimal or 0x... hex
+        return int(str(v).strip())
     except Exception:
         return default
 
-def _csv_set(val: str) -> set[str]:
-    if not val:
-        return set()
-    return {item.strip() for item in val.split(",") if item.strip()}
+def _as_float(v, default=0.0):
+    try:
+        return float(str(v).strip())
+    except Exception:
+        return default
+
+def _as_int_list(v):
+    if not v:
+        return []
+    out = []
+    for p in str(v).split(","):
+        p = p.strip()
+        if p.isdigit():
+            out.append(int(p))
+    return out
+
 
 class BotConfig:
-    """Bot configuration class."""
+    """
+    Centralized, environment-backed config with safe defaults.
+    Expose attributes used across cogs so we avoid AttributeError at load time.
+    """
 
     def __init__(self):
-        # -------- Required --------
-        self.BOT_TOKEN: str = os.getenv("DISCORD_BOT_TOKEN", "")
+        # --- Core / AI provider ---
+        self.BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+        self.COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
 
-        # -------- Core bot settings --------
-        self.COMMAND_PREFIX: str = os.getenv("COMMAND_PREFIX", "!")
-        self.DEBUG_MODE: bool = _as_bool(os.getenv("DEBUG_MODE", "false"))
-        self.MAX_MESSAGE_LENGTH: int = _as_int(os.getenv("MAX_MESSAGE_LENGTH", "2000"), 2000)
-        self.DEFAULT_EMBED_COLOR: int = _as_int(
-            os.getenv("DEFAULT_EMBED_COLOR", "0x3498db"), 0x3498DB
-        )
+        self.PROVIDER = os.getenv("PROVIDER", "groq").lower()  # 'groq' | 'hf' | 'openai'
+        self.GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        self.HF_MODEL = os.getenv("HF_MODEL", "gpt2")
+        self.OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-        # -------- Logging --------
-        self.LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-        self.LOG_FILE: str = os.getenv("LOG_FILE", "bot.log")
+        self.AI_MAX_NEW_TOKENS = _as_int(os.getenv("AI_MAX_NEW_TOKENS"), 256)
+        self.AI_TEMPERATURE = _as_float(os.getenv("AI_TEMPERATURE"), 0.7)
 
-        # -------- AI Provider Switch --------
-        # "hf" (Hugging Face) for development; "openai" when you upgrade.
-        self.PROVIDER: str = os.getenv("PROVIDER", "hf").strip().lower()
+        # System / persona prompts
+        self.SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "").strip()
+        self.PUBLIC_PERSONA_PROMPT = os.getenv("PUBLIC_PERSONA_PROMPT", "").strip()
+        self.BACKSTAGE_PERSONA_PROMPT = os.getenv("BACKSTAGE_PERSONA_PROMPT", "").strip()
+        self.MORPHEUS_STYLE_HINT = os.getenv("MORPHEUS_STYLE_HINT", "").strip()
 
-        # -------- Hugging Face (dev) --------
-        # Example model: mistralai/Mistral-7B-Instruct-v0.3
-        self.HF_MODEL: str = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
-        self.HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")  # hf_... (optional but recommended)
+        # Greeter
+        self.GREETER_DM_PROMPT = os.getenv("GREETER_DM_PROMPT", "").strip()
+        self.GREETER_PUBLIC_PROMPT = os.getenv("GREETER_PUBLIC_PROMPT", "").strip()
 
-        # -------- OpenAI (upgrade path) --------
-        self.OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")  # sk-...
+        # --- Owner / roles / channels (common) ---
+        self.OWNER_USER_ID = _as_int(os.getenv("OWNER_USER_ID"), 0)
+        self.TRUST_ROLE_IDS = _as_int_list(os.getenv("TRUST_ROLE_IDS", ""))   # fast-track / trusted users
 
-        # -------- AI Behavior --------
-        # Global system prompt for your assistant
-        self.SYSTEM_PROMPT: str = os.getenv(
-            "SYSTEM_PROMPT",
-            "You are a friendly, concise Discord assistant. Be helpful, follow server rules, and keep replies under 8 lines.",
-        )
-        # Generation knobs
-        self.AI_MAX_NEW_TOKENS: int = _as_int(os.getenv("AI_MAX_NEW_TOKENS", "256"), 256)
-        self.AI_TEMPERATURE: float = float(os.getenv("AI_TEMPERATURE", "0.7"))
+        self.YT_VERIFIED_ROLE_ID = _as_int(os.getenv("YT_VERIFIED_ROLE_ID"), 0)
+        self.MEMBER_ROLE_ID = _as_int(os.getenv("MEMBER_ROLE_ID"), 0)         # your “Members / The Construct” role
+        self.WELCOME_CHANNEL_ID = _as_int(os.getenv("WELCOME_CHANNEL_ID"), 0)
+        self.MODLOG_CHANNEL_ID = _as_int(os.getenv("MODLOG_CHANNEL_ID"), 0)
 
-        # -------- Triggers & UX --------
-        # Channels where the bot will reply without being @mentioned (comma-separated IDs)
-        self.AI_CHAT_CHANNEL_IDS: set[str] = _csv_set(os.getenv("AI_CHAT_CHANNEL_IDS", ""))
+        # --- Mission / memory bridge ---
+        self.MISSION_AUTO_EXPORT_ENABLED = _as_bool(os.getenv("MISSION_AUTO_EXPORT_ENABLED"), False)
+        self.MISSION_EXPORT_INTERVAL_MIN = _as_int(os.getenv("MISSION_EXPORT_INTERVAL_MIN"), 60)
+        self.MISSION_EXPORT_PATH = os.getenv("MISSION_EXPORT_PATH", "data/mission_memory.json")
+        self.MEMORY_BRIDGE_PATH = os.getenv("MEMORY_BRIDGE_PATH", "data/mission_memory.json")
 
-        # Greet new members in DMs (falls back to system channel if DMs blocked)
-        self.GREETING_DMS: bool = _as_bool(os.getenv("GREETING_DMS", "true"))
+        # --- Tickets (if used by tickets_cog) ---
+        self.TICKET_HOME_CHANNEL_ID = _as_int(os.getenv("TICKET_HOME_CHANNEL_ID"), 0)
+        self.TICKET_STAFF_ROLES = _as_int_list(os.getenv("TICKET_STAFF_ROLES", ""))
 
-        # Safety: basic keyword filter enable (you can implement later)
-        self.ENABLE_KEYWORD_FILTER: bool = _as_bool(os.getenv("ENABLE_KEYWORD_FILTER", "false"))
+        # --- Moderation (used by moderation_cog) ---
+        self.MAX_MENTIONS = _as_int(os.getenv("MAX_MENTIONS"), 8)
+        self.SPAM_WINDOW_SECS = _as_int(os.getenv("SPAM_WINDOW_SECS"), 12)
+        self.ALLOW_INVITES = _as_bool(os.getenv("ALLOW_INVITES"), False)
 
-    # ---------------- Validation ----------------
-    def validate_config(self) -> bool:
-        """Validate configuration settings."""
+        # --- Presence (presence_cog) ---
+        self.PRESENCE_INTERVAL_SEC = _as_int(os.getenv("PRESENCE_INTERVAL_SEC"), 300)
+        self.PRESENCE_MAINFRAME = os.getenv("PRESENCE_MAINFRAME", "Standing by in MAINFRAME").strip()
+        self.PRESENCE_CONSTRUCT = os.getenv("PRESENCE_CONSTRUCT", "Guiding in The Construct").strip()
+        self.PRESENCE_HAVN = os.getenv("PRESENCE_HAVN", "Keeping watch in HAVN").strip()
+
+        # --- Void pulse (void_pulse_cog) ---
+        self.VOID_CHANNEL_ID = _as_int(os.getenv("VOID_CHANNEL_ID"), 0)
+        self.VOID_BROADCAST_HOURS = _as_int(os.getenv("VOID_BROADCAST_HOURS"), 72)
+
+        # --- YouTube (youtube & yt_announcer) ---
+        self.YT_CHANNEL_ID = os.getenv("YT_CHANNEL_ID", "").strip()
+        self.YT_ANNOUNCE_CHANNEL_ID = _as_int(os.getenv("YT_ANNOUNCE_CHANNEL_ID"), 0)
+        self.YT_POLL_MIN = _as_int(os.getenv("YT_POLL_MIN"), 10)
+
+    # light sanity checks
+    def validate_config(self):
         if not self.BOT_TOKEN:
-            raise ValueError(
-                "DISCORD_BOT_TOKEN environment variable is required. "
-                "Please set it in your environment or .env file."
-            )
+            raise ValueError("Missing DISCORD_BOT_TOKEN")
 
-        # Discord tokens are variable length; avoid over-strict checks that reject valid tokens.
-        if len(self.COMMAND_PREFIX) == 0:
-            raise ValueError("Command prefix cannot be empty")
-
-        if self.PROVIDER not in {"hf", "openai"}:
-            raise ValueError("PROVIDER must be 'hf' or 'openai'")
-
-        if self.PROVIDER == "hf":
-            if not self.HF_MODEL:
-                raise ValueError("HF_MODEL is required when PROVIDER=hf")
-            # HF_API_TOKEN is optional for public endpoints but recommended.
-        else:  # openai
-            if not self.OPENAI_API_KEY:
-                raise ValueError("OPENAI_API_KEY is required when PROVIDER=openai")
-
-        # Discord hard limit is 2000 chars; keep ours at or below to avoid errors.
-        if self.MAX_MESSAGE_LENGTH > 2000:
-            raise ValueError("MAX_MESSAGE_LENGTH cannot exceed 2000")
-
+        # provider is flexible; we just log if unknown elsewhere
         return True

@@ -1,37 +1,45 @@
 #!/usr/bin/env python3
 """
 Discord Bot Entry Point
-Main file to start the Discord bot application.
 """
 
 import asyncio
 import logging
+import os
 import sys
-from bot import DiscordBot
 
+from bot import DiscordBot
+from keep_alive import keep_alive  # tiny Flask ping server
+
+# ---------- logging ----------
 def setup_logging():
-    """Configure logging for the bot."""
+    level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('bot.log'),
-            logging.StreamHandler(sys.stdout)
-        ]
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("bot.log")]
     )
 
+# ---------- main ----------
 async def main():
-    """Main entry point for the bot."""
     setup_logging()
-    logger = logging.getLogger(__name__)
-    
+    log = logging.getLogger("entry")
+
+    # start the keep-alive HTTP server so UptimeRobot can ping it
     try:
-        bot = DiscordBot()
+        keep_alive()
+        log.info("keep_alive web server started.")
+    except Exception as e:
+        log.warning("keep_alive failed to start (continuing): %s", e)
+
+    # start the Discord bot
+    bot = DiscordBot()
+    try:
         await bot.start_bot()
     except KeyboardInterrupt:
-        logger.info("Bot shutdown requested by user")
+        log.info("Shutdown requested by user.")
     except Exception as e:
-        logger.error(f"Fatal error starting bot: {e}")
+        log.exception("Fatal error starting bot: %s", e)
         sys.exit(1)
 
 if __name__ == "__main__":

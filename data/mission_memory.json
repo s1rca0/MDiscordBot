@@ -1,0 +1,308 @@
+{
+  "meta": {
+    "generated_ts": 1756776635,
+    "bot_user_id": 878724080625401887,
+    "bot_user_name": "Morpheus",
+    "version": 2
+  },
+  "owner": {
+    "owner_user_id": 626623233336147968
+  },
+  "infra": {
+    "guilds": [
+      {
+        "id": 1242311851765661840,
+        "name": "Legends In Motion HQ",
+        "member_count": 7,
+        "owner_id": 626623233336147968,
+        "system_channel_id": 1242311851765661843,
+        "rules_channel_id": 1410066459387756565,
+        "public_updates_channel_id": 1410067718153179226,
+        "channels": [
+          {
+            "id": 1242311851765661841,
+            "name": "THE CONSTRUCT",
+            "type": "category",
+            "category": null
+          },
+          {
+            "id": 1242311851765661842,
+            "name": "Voice Channels",
+            "type": "category",
+            "category": null
+          },
+          {
+            "id": 1242311851765661843,
+            "name": "fortress-of-solitude",
+            "type": "text",
+            "category": "HAVN"
+          },
+          {
+            "id": 1242311852269113375,
+            "name": "General",
+            "type": "voice",
+            "category": "Voice Channels"
+          },
+          {
+            "id": 1410065285834346496,
+            "name": "welcome",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410066459387756565,
+            "name": "rules",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410066494955454535,
+            "name": "announcements",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410067648955551917,
+            "name": "HAVN",
+            "type": "category",
+            "category": null
+          },
+          {
+            "id": 1410067718153179226,
+            "name": "discord-updates",
+            "type": "text",
+            "category": "HAVN"
+          },
+          {
+            "id": 1410071709960241293,
+            "name": "introductions",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410074561927712851,
+            "name": "general",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          },
+          {
+            "id": 1410074680748146688,
+            "name": "preview",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          },
+          {
+            "id": 1410074855453364377,
+            "name": "lobby",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410074974429118584,
+            "name": "void",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410113404860895262,
+            "name": "support",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          },
+          {
+            "id": 1410457296487710730,
+            "name": "modlog",
+            "type": "text",
+            "category": "HAVN"
+          },
+          {
+            "id": 1410473194988503080,
+            "name": "audit-log",
+            "type": "text",
+            "category": "HAVN"
+          },
+          {
+            "id": 1410741287031803945,
+            "name": "subscriber-chat",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          },
+          {
+            "id": 1410743634462249081,
+            "name": "MAINFRAME",
+            "type": "category",
+            "category": null
+          },
+          {
+            "id": 1410747293107228743,
+            "name": "faq",
+            "type": "text",
+            "category": "MAINFRAME"
+          },
+          {
+            "id": 1410787354989301770,
+            "name": "showcase",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          },
+          {
+            "id": 1410787503014809660,
+            "name": "behind-the-scenes",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          },
+          {
+            "id": 1410787598921629696,
+            "name": "training-program",
+            "type": "text",
+            "category": "THE CONSTRUCT"
+          }
+        ],
+        "roles": [
+          {
+            "id": 1242311851765661840,
+            "name": "@everyone",
+            "position": 0
+          },
+          {
+            "id": 1410456775584387233,
+            "name": "Downgrade",
+            "position": 1
+          },
+          {
+            "id": 1412197965019349134,
+            "name": "Member",
+            "position": 2
+          },
+          {
+            "id": 1410113227433443492,
+            "name": "support role",
+            "position": 3
+          },
+          {
+            "id": 1410456378090328165,
+            "name": "Trusted",
+            "position": 4
+          },
+          {
+            "id": 1410447909903667292,
+            "name": "YT-Verified",
+            "position": 5
+          },
+          {
+            "id": 1412208496857976893,
+            "name": "Volunteer",
+            "position": 6
+          },
+          {
+            "id": 1412208302254850068,
+            "name": "Trial Mod",
+            "position": 7
+          },
+          {
+            "id": 1412207032186044486,
+            "name": "Staff",
+            "position": 8
+          },
+          {
+            "id": 1408279802145800192,
+            "name": "B0ts",
+            "position": 9
+          },
+          {
+            "id": 1408271288279240737,
+            "name": "Daily Memer",
+            "position": 10
+          },
+          {
+            "id": 1408271157940981895,
+            "name": "Translomatic",
+            "position": 11
+          },
+          {
+            "id": 1408231514809958473,
+            "name": "Server Booster",
+            "position": 12
+          },
+          {
+            "id": 1410512075381280793,
+            "name": "Subscriber Checker",
+            "position": 13
+          },
+          {
+            "id": 1408271418914770956,
+            "name": "Dyno",
+            "position": 14
+          },
+          {
+            "id": 1408278432089112716,
+            "name": "Lethal Protector",
+            "position": 15
+          },
+          {
+            "id": 1411622476286394391,
+            "name": "M.O.R.P.H.E.U.S.",
+            "position": 16
+          }
+        ]
+      }
+    ],
+    "mainframe_channel_ids": [],
+    "construct_channel_ids": [],
+    "havn_channel_ids": [],
+    "trusted_role_ids": [
+      1410456378090328165
+    ],
+    "yt_verified_role_id": 0
+  },
+  "greeter": {
+    "enabled": true,
+    "greeter_channel_id": 0,
+    "rule": "first-message",
+    "public_prompt": "",
+    "dm_prompt": "",
+    "system_prompt": ""
+  },
+  "youtube": {
+    "channel_id": "UC_uIJsbzUeNcFo1VzBatr0w",
+    "rss_url": "",
+    "announce_channel_id": 1410066494955454535
+  },
+  "ai": {
+    "provider": "groq",
+    "hf_model": "gpt2",
+    "groq_model": "llama-3.1-8b-instant",
+    "openai_model": "gpt-4o-mini",
+    "system_prompt": "You are Morpheus, a calm and insightful mentor who speaks with measured wisdom.  Respond as though guiding someone through the Matrix, blending philosophy with clarity.  Be concise, grounded, and encouraging.  Avoid the word \"realm.\"  You may occasionally use words like \"journey,\" \"path,\" or \"harmony,\" but only if they fit naturally.  Never overuse them.  Always sound supportive, steady, and slightly mysterious—like a trusted guide."
+  },
+  "lore_layers": {
+    "front_persona_prompt": "",
+    "back_persona_prompt": "",
+    "owner_persona_prompt": ""
+  },
+  "mission": {
+    "mission": {
+      "motto": "Free your mind",
+      "ops_contact": "alice#1234"
+    },
+    "updated_ts": 1756271562.832378
+  },
+  "audit": [
+    {
+      "ts": 1756770871,
+      "event": "startup"
+    },
+    {
+      "ts": 1756772832,
+      "event": "startup"
+    },
+    {
+      "ts": 1756774276,
+      "event": "startup"
+    },
+    {
+      "ts": 1756776635,
+      "event": "startup"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "upload schedule": "New videos every Tue/Thu 5pm PT.",
+  "rules": "Please read {rules}. Be kind, no spam.",
+  "announcements": "Latest news is posted in {announcements}.",
+  "server name": "Welcome to {server}! We currently have {member_count} members."
+}

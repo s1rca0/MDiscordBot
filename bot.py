@@ -1,94 +1,87 @@
 # bot.py
 import os
-import asyncio
 import logging
-from typing import Optional
+import importlib
+from typing import List
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-from ai_provider import ai_reply  # HF ↔ OpenAI switch
+from ai_provider import ai_reply
 from config import BotConfig
 
+log = logging.getLogger(__name__)
 cfg = BotConfig()
 cfg.validate_config()
 
-log = logging.getLogger(__name__)
 
 class DiscordBot:
     def __init__(self):
         self._synced = False
-        # Intents
-        intents = discord.Intents.default()
-        intents.message_content = True   # needed to read message text
-        intents.members = True           # for join events / greetings
 
-        # Create commands.Bot so we can do slash + events
+        # ---- Intents
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+
+        # ---- Bot
         self.bot = commands.Bot(
-            command_prefix="!",
+            command_prefix=cfg.COMMAND_PREFIX,
             intents=intents,
-            description="AI Discord Bot (HF dev, OpenAI-ready)"
+            description="Morpheus — AI assistant for Legends in Motion HQ",
         )
 
-        # Wire events/commands
+        # Register handlers and commands
         self._register_events()
         self._register_app_commands()
 
-    # ----------------- public API used by main.py -----------------
+    # -------------------- lifecycle --------------------
     async def start_bot(self):
         token = cfg.BOT_TOKEN
         if not token:
-            raise RuntimeError("Missing DISCORD_BOT_TOKEN env var")
+            raise RuntimeError("Missing DISCORD_BOT_TOKEN")
         await self.bot.start(token)
 
-    # ----------------- events & commands -----------------
+    # -------------------- events --------------------
     def _register_events(self):
         @self.bot.event
         async def on_ready():
-            try:
-                synced = await self.bot.tree.sync()
-                log.info("Synced %d commands: %s", len(synced), [c.name for c in synced])
-            except Exception as e:
-                log.warning("Slash command sync failed: %s", e)
+            # sync slash commands once per process
+            if not self._synced:
+                try:
+                    synced = await self.bot.tree.sync()
+                    log.info("Synced %d commands: %s", len(synced), [c.name for c in synced])
+                except Exception as e:
+                    log.warning("Slash command sync failed: %s", e)
+                self._synced = True
+
             log.info("✅ Logged in as %s (%s)", self.bot.user, self.bot.user.id)
 
-        @self.bot.event
-        async def on_member_join(member: discord.Member):
-            # Greet publicly if possible
-            ch = member.guild.system_channel
-            if ch:
-                try:
-                    await ch.send(
-                        f"Welcome {member.mention}! I’m {self.bot.user.name} — ping me or use /ask to chat."
-                    )
-                except Exception:
-                    pass
-            # DM greeting (may fail if DMs are blocked)
+            # Auto-load all cogs on first ready
             try:
-                await member.send(
-                    f"Hi {member.display_name}! I’m {self.bot.user.name}. "
-                    f"Type /ask in the server or DM me here."
-                )
-            except Exception:
-                pass
+                await self._auto_load_cogs()
+            except Exception as e:
+                log.exception("Auto cog load failed: %s", e)
 
         @self.bot.event
         async def on_message(message: discord.Message):
-            # Keep other commands working
+            # Let other bots pass; keep prefix cmds working
             if message.author.bot:
                 return
 
-            # Trigger policy: reply in DMs, or when mentioned in a guild
+            # Trigger only in DMs or when mentioned in guild
             trigger = (message.guild is None) or (self.bot.user in message.mentions)
             if not trigger:
                 return
 
-            # Clean mention text in guilds
-            content = message.content
+            content = message.content or ""
             if message.guild is not None:
-                content = content.replace(f"<@{self.bot.user.id}>", "").strip()
-                content = content.replace(f"<@!{self.bot.user.id}>", "").strip()
+                # strip mention variants
+                content = content.replace(f"<@{self.bot.user.id}>", "").replace(
+                    f"<@!{self.bot.user.id}>", ""
+                ).strip()
             if not content:
                 content = "Say hi."
 
@@ -97,19 +90,24 @@ class DiscordBot:
                     cfg.SYSTEM_PROMPT,
                     [{"role": "user", "content": content}],
                     max_new_tokens=cfg.AI_MAX_NEW_TOKENS,
-                    temperature=cfg.AI_TEMPERATURE
+                    temperature=cfg.AI_TEMPERATURE,
                 )
             except Exception as e:
                 log.exception("AI error: %s", e)
                 reply = "Sorry, I hit an error. Try again."
+
             if not reply or not reply.strip():
-                reply = "I am here - try asking me again."
+                reply = "I’m here—try again."
+
+            # keep under Discord limit
             await message.channel.send(reply[:1900])
-            # Allow prefixed commands to run too
+
+            # allow prefixed commands to continue
             await self.bot.process_commands(message)
 
+    # -------------------- slash/app cmds --------------------
     def _register_app_commands(self):
-        @self.bot.tree.command(name="ask", description="Ask the AI a question")
+        @self.bot.tree.command(name="ask", description="Ask Morpheus a question")
         @app_commands.describe(prompt="Your question or prompt")
         async def ask(interaction: discord.Interaction, prompt: str):
             await interaction.response.defer()
@@ -118,12 +116,48 @@ class DiscordBot:
                     cfg.SYSTEM_PROMPT,
                     [{"role": "user", "content": prompt}],
                     max_new_tokens=cfg.AI_MAX_NEW_TOKENS,
-                    temperature=cfg.AI_TEMPERATURE
+                    temperature=cfg.AI_TEMPERATURE,
                 )
             except Exception as e:
                 log.exception("AI error: %s", e)
-                reply = "Sorry, I couldn’t get a response."
-                
+                reply = "I encountered interference. Try again."
+
             if not reply or not reply.strip():
-                    reply = "I am here - try asking me again."
+                reply = "I am here—ask again."
+
             await interaction.followup.send(reply[:1900])
+
+    # -------------------- utilities --------------------
+    async def _auto_load_cogs(self):
+        """Load every .py module in ./cogs as an extension if it exposes setup()."""
+        cogs_dir = os.path.join(os.path.dirname(__file__), "cogs")
+        if not os.path.isdir(cogs_dir):
+            log.warning("cogs/ directory not found; skipping auto-load.")
+            return
+
+        loaded: List[str] = []
+        skipped: List[str] = []
+
+        for fname in sorted(os.listdir(cogs_dir)):
+            if not fname.endswith(".py") or fname.startswith(("_", ".")):
+                continue
+            mod_name = fname[:-3]
+            ext_path = f"cogs.{mod_name}"
+            try:
+                # quick presence check to avoid import side-effects if no setup()
+                spec = importlib.util.find_spec(ext_path)
+                if spec is None:
+                    skipped.append(ext_path)
+                    continue
+
+                # Let discord.py load it (expects async setup(bot))
+                await self.bot.load_extension(ext_path)
+                loaded.append(ext_path)
+            except Exception as e:
+                log.warning("Failed to load %s: %s", ext_path, e)
+                skipped.append(ext_path)
+
+        if loaded:
+            log.info("Loaded cogs: %s", ", ".join(loaded))
+        if skipped:
+            log.info("Skipped/failed cogs: %s", ", ".join(skipped))
