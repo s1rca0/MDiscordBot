@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_ts": 1756776635,
+    "generated_ts": 1756778482,
     "bot_user_id": 878724080625401887,
     "bot_user_name": "Morpheus",
     "version": 2
@@ -302,6 +302,14 @@
     },
     {
       "ts": 1756776635,
+      "event": "startup"
+    },
+    {
+      "ts": 1756777794,
+      "event": "startup"
+    },
+    {
+      "ts": 1756778482,
       "event": "startup"
     }
   ]

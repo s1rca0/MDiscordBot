@@ -10,7 +10,7 @@ from discord import app_commands
 DATA_DIR = "data"
 GCFG_PATH = os.path.join(DATA_DIR, "guild_config.json")
 
-# ----------------- tiny store helpers (shared style) -----------------
+# ----------------- tiny store helpers -----------------
 def _ensure_store():
     if not os.path.isdir(DATA_DIR):
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -55,19 +55,14 @@ def _get_trust_role_ids(guild_id: int) -> Set[int]:
     return set(int(x) for x in g.get("trust_role_ids", []))
 
 def _get_mission_trust_role_id(guild_id: int) -> int:
-    """Optional special mission-trust role (if you set it via lore/mission cog)."""
+    """Optional special mission-trust role (if you set it via mission cog)."""
     g = _get_guild_dict(guild_id)
     return int(g.get("mission_trust_role_id", 0) or 0)
 
 # ----------------- layer logic -----------------
-# Layers:
-# - MAINFRAME: everyone by default
-# - CONSTRUCT: has your configured "Members" role (you can rename that role to “The Construct”)
-# - HAVN: any trusted role OR mission-trust role OR owner (handled by other cogs’ commands)
-
-LAYER_MAINFRAME = "MAINFRAME"
-LAYER_CONSTRUCT = "CONSTRUCT"
-LAYER_HAVN = "HAVN"
+LAYER_MAINFRAME = "MAINFRAME"   # everyone by default
+LAYER_CONSTRUCT = "CONSTRUCT"   # has your configured Member role (“The Construct”)
+LAYER_HAVN = "HAVN"             # any trusted role OR mission-trust role
 
 class LayerCog(commands.Cog):
     """
@@ -77,19 +72,15 @@ class LayerCog(commands.Cog):
     Everyone else -> MAINFRAME.
 
     Provides:
-      /mylayer      : user’s layer (minimal info for non-owners)
-      /layer_info   : owner/admin summary of current role wiring
+      /mylayer      : user’s layer (minimal info)
+      /layer_info   : owner/admin summary of wiring
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # --------- public util for other cogs ----------
+    # ---------- public util ----------
     def get_user_layer(self, member: Optional[discord.Member]) -> str:
-        """
-        Return one of: HAVN, CONSTRUCT, MAINFRAME.
-        Safe if member is None (DMs) -> MAINFRAME by default.
-        """
         if member is None or member.guild is None:
             return LAYER_MAINFRAME
 
@@ -100,29 +91,25 @@ class LayerCog(commands.Cog):
 
         role_ids = {r.id for r in getattr(member, "roles", [])}
 
-        # HAVN first (highest clearance)
+        # HAVN first
         if (trust_ids and role_ids.intersection(trust_ids)) or (mission_trust_id and mission_trust_id in role_ids):
             return LAYER_HAVN
 
-        # CONSTRUCT (inner circle)
+        # CONSTRUCT
         if member_role_id and member_role_id in role_ids:
             return LAYER_CONSTRUCT
 
-        # default
         return LAYER_MAINFRAME
 
-    # --------- commands ----------
+    # ---------- commands ----------
     @app_commands.command(name="mylayer", description="See which layer you’re in.")
     async def mylayer(self, interaction: discord.Interaction):
-        # Work in DMs or Guilds
         member = interaction.user if isinstance(interaction.user, discord.Member) else None
         if interaction.guild and not isinstance(interaction.user, discord.Member):
-            # Convert to Member if possible (rare edge case)
             member = interaction.guild.get_member(interaction.user.id)
 
         layer = self.get_user_layer(member)
 
-        # Minimal info for everyone; no internal role IDs shown
         descriptions = {
             LAYER_MAINFRAME: "You’re in **MAINFRAME** — the public plaza. Explore, chat, and get a feel for the flow.",
             LAYER_CONSTRUCT: "You’re in **THE CONSTRUCT** — inner circle access. More channels, deeper collaboration.",
@@ -141,10 +128,7 @@ class LayerCog(commands.Cog):
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
 
-        is_admin = False
-        if isinstance(interaction.user, discord.Member):
-            is_admin = bool(interaction.user.guild_permissions.administrator)
-
+        is_admin = isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator
         if not is_admin:
             await interaction.response.send_message("Admin only.", ephemeral=True)
             return
@@ -155,22 +139,26 @@ class LayerCog(commands.Cog):
         mission_trust_id = _get_mission_trust_role_id(gid)
 
         member_role = interaction.guild.get_role(member_role_id) if member_role_id else None
-        trust_lines = []
-        for rid in trust_ids:
-            r = interaction.guild.get_role(rid)
-            trust_lines.append(f"- {rid} ({r.mention if r else 'unknown role'})")
-
         mission_role = interaction.guild.get_role(mission_trust_id) if mission_trust_id else None
 
-        desc = (
-            f"**CONSTRUCT:** member_role_id = "
-            f"{member_role.mention if member_role else '(not set)'}\n\n"
-            f"**HAVN:**\n"
-            f"- trust roles: \n{('\n'.join(trust_lines) if trust_lines else '(none)')}\n"
-            f"- mission-trust role: "
-            f"{mission_role.mention if mission_role else '(not set)'}\n\n"
-            "_Everyone else is MAINFRAME by default._"
-        )
+        # Build lines (avoid nested f-strings with backslashes)
+        lines = []
+        lines.append("**CONSTRUCT:** member_role_id = " + (member_role.mention if member_role else "(not set)"))
+        lines.append("")
+        lines.append("**HAVN:**")
+        if trust_ids:
+            trust_block = []
+            for rid in trust_ids:
+                r = interaction.guild.get_role(rid)
+                trust_block.append(f"- {rid} ({r.mention if r else 'unknown role'})")
+            lines.extend(trust_block)
+        else:
+            lines.append("(no trust roles)")
+        lines.append(f"- mission-trust role: {mission_role.mention if mission_role else '(not set)'}")
+        lines.append("")
+        lines.append("_Everyone else is MAINFRAME by default._")
+
+        desc = "\n".join(lines)
         await interaction.response.send_message(desc, ephemeral=True)
 
 async def setup(bot: commands.Bot):

@@ -1,7 +1,6 @@
 # config.py
 import os
 
-
 def _as_bool(v, default=False):
     if v is None:
         return default
@@ -33,14 +32,12 @@ def _as_int_list(v):
 class BotConfig:
     """
     Centralized, environment-backed config with safe defaults.
-    Expose attributes used across cogs so we avoid AttributeError at load time.
     """
 
     def __init__(self):
         # --- Core / AI provider ---
         self.BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
         self.COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
-
         self.PROVIDER = os.getenv("PROVIDER", "groq").lower()  # 'groq' | 'hf' | 'openai'
         self.GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         self.HF_MODEL = os.getenv("HF_MODEL", "gpt2")
@@ -61,10 +58,10 @@ class BotConfig:
 
         # --- Owner / roles / channels (common) ---
         self.OWNER_USER_ID = _as_int(os.getenv("OWNER_USER_ID"), 0)
-        self.TRUST_ROLE_IDS = _as_int_list(os.getenv("TRUST_ROLE_IDS", ""))   # fast-track / trusted users
+        self.TRUST_ROLE_IDS = _as_int_list(os.getenv("TRUST_ROLE_IDS", ""))  # fast-track / trusted users
 
         self.YT_VERIFIED_ROLE_ID = _as_int(os.getenv("YT_VERIFIED_ROLE_ID"), 0)
-        self.MEMBER_ROLE_ID = _as_int(os.getenv("MEMBER_ROLE_ID"), 0)         # your “Members / The Construct” role
+        self.MEMBER_ROLE_ID = _as_int(os.getenv("MEMBER_ROLE_ID"), 0)       # “Members / The Construct”
         self.WELCOME_CHANNEL_ID = _as_int(os.getenv("WELCOME_CHANNEL_ID"), 0)
         self.MODLOG_CHANNEL_ID = _as_int(os.getenv("MODLOG_CHANNEL_ID"), 0)
 
@@ -74,14 +71,20 @@ class BotConfig:
         self.MISSION_EXPORT_PATH = os.getenv("MISSION_EXPORT_PATH", "data/mission_memory.json")
         self.MEMORY_BRIDGE_PATH = os.getenv("MEMORY_BRIDGE_PATH", "data/mission_memory.json")
 
-        # --- Tickets (if used by tickets_cog) ---
+        # --- Tickets (tickets_cog) ---
         self.TICKET_HOME_CHANNEL_ID = _as_int(os.getenv("TICKET_HOME_CHANNEL_ID"), 0)
         self.TICKET_STAFF_ROLES = _as_int_list(os.getenv("TICKET_STAFF_ROLES", ""))
 
-        # --- Moderation (used by moderation_cog) ---
+        # --- Moderation (moderation_cog) ---
         self.MAX_MENTIONS = _as_int(os.getenv("MAX_MENTIONS"), 8)
         self.SPAM_WINDOW_SECS = _as_int(os.getenv("SPAM_WINDOW_SECS"), 12)
+        self.SPAM_MAX_MSGS = _as_int(os.getenv("SPAM_MAX_MSGS"), 5)  # <-- added default
         self.ALLOW_INVITES = _as_bool(os.getenv("ALLOW_INVITES"), False)
+        self.AUTOMOD_REGEX = os.getenv("AUTOMOD_REGEX", "").strip()  # <-- added default (comma-separated)
+        # Example: r"(?i)\bslur\b",r"https?://bad-site\.tld"
+
+        # Strike policy thresholds: "3:timeout:30,5:kick,7:ban"
+        self.STRIKE_THRESHOLDS = os.getenv("STRIKE_THRESHOLDS", "3:timeout:30,5:kick,7:ban").strip()  # <-- added
 
         # --- Presence (presence_cog) ---
         self.PRESENCE_INTERVAL_SEC = _as_int(os.getenv("PRESENCE_INTERVAL_SEC"), 300)
@@ -98,10 +101,7 @@ class BotConfig:
         self.YT_ANNOUNCE_CHANNEL_ID = _as_int(os.getenv("YT_ANNOUNCE_CHANNEL_ID"), 0)
         self.YT_POLL_MIN = _as_int(os.getenv("YT_POLL_MIN"), 10)
 
-    # light sanity checks
     def validate_config(self):
         if not self.BOT_TOKEN:
             raise ValueError("Missing DISCORD_BOT_TOKEN")
-
-        # provider is flexible; we just log if unknown elsewhere
         return True

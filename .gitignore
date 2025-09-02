@@ -1,0 +1,24 @@
+# --- Ignore secrets ---
+.env
+.env.*
+*.key
+
+# --- Ignore runtime / cache ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Ignore data/logs ---
+*.log
+data/
+bot.log
+
+# --- Ignore Replit-specific files ---
+.pythonlibs/
+.upm/
+.replit
+*.sqlite3
+
+# --- Ignore backups ---
+*.backup
