@@ -1,4 +1,4 @@
-# cogs/user_app_cog.py
+from __future__ import annotations
 import os
 import json
 import asyncio
@@ -10,20 +10,17 @@ from discord import app_commands
 
 OPTIN_PATH = "data/user_optins.json"
 
-
 def _load_optins() -> Dict[str, bool]:
     try:
-        with open(OPTIN_PATH, "r", encoding="utf-8") as f:
+        with open(OPTIN_PATH, "r") as f:
             return json.load(f)
     except Exception:
         return {}
 
-
 def _save_optins(d: Dict[str, bool]):
     os.makedirs(os.path.dirname(OPTIN_PATH), exist_ok=True)
-    with open(OPTIN_PATH, "w", encoding="utf-8") as f:
+    with open(OPTIN_PATH, "w") as f:
         json.dump(d, f, indent=2)
-
 
 def _is_owner(user_id: int) -> bool:
     try:
@@ -31,14 +28,10 @@ def _is_owner(user_id: int) -> bool:
     except Exception:
         return False
 
-
 class UserAppCog(commands.Cog, name="User App / DMs"):
     """
     User-installable features + safe DM opt-in.
     Works in DMs and in servers.
-
-    NOTE: /helpdm is intentionally NOT defined here to avoid duplicate command
-    registration. It lives in cogs/dm_start_cog.py.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -46,19 +39,12 @@ class UserAppCog(commands.Cog, name="User App / DMs"):
         self.invite_url = os.getenv("SERVER_INVITE_URL", "").strip()
         self.optins = _load_optins()
 
-    # --- Utility ---
     async def _reply_alive(self, interaction: discord.Interaction, text: str, dm_ok=True):
         prefix = "▮ Morpheus: "
         try:
-            await interaction.response.send_message(
-                prefix + text,
-                ephemeral=(interaction.guild is not None)
-            )
+            await interaction.response.send_message(prefix + text, ephemeral=(interaction.guild is not None))
         except discord.InteractionResponded:
-            await interaction.followup.send(
-                prefix + text,
-                ephemeral=(interaction.guild is not None)
-            )
+            await interaction.followup.send(prefix + text, ephemeral=(interaction.guild is not None))
         except discord.Forbidden:
             if dm_ok and interaction.user:
                 try:
@@ -66,7 +52,6 @@ class UserAppCog(commands.Cog, name="User App / DMs"):
                 except Exception:
                     pass
 
-    # --- Commands ---
     @app_commands.command(name="start", description="Begin in DM or server. I’ll guide you.")
     @app_commands.allowed_installs(guilds=True, users=True)
     async def start(self, interaction: discord.Interaction):
@@ -119,12 +104,11 @@ class UserAppCog(commands.Cog, name="User App / DMs"):
                 u = await self.bot.fetch_user(uid)
                 await u.send(f"▮ Morpheus: {message}")
                 ok += 1
-                await asyncio.sleep(0.3)  # gentle rate limit
+                await asyncio.sleep(0.3)
             except Exception:
                 pass
 
         await self._reply_alive(interaction, f"Signal transmitted to {ok} agent(s).")
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(UserAppCog(bot))
