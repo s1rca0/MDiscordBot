@@ -1,5 +1,5 @@
+# cogs/meme_feed_cog.py
 from __future__ import annotations
-from discord import app_commands
 import os
 import json
 import time
@@ -7,19 +7,18 @@ import random
 from typing import Optional, Dict, List
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 import requests
 
-from config import cfg  # uses module-level cfg
+from config import cfg
 
-# Ephemeral history file (safe on Railway Hobby; lost on redeploys, which is fine)
 HIST_PATH = "data/meme_history.json"
 
 def _load_hist() -> Dict[str, float]:
     try:
         with open(HIST_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
+            return json.load(f)
     except Exception:
         return {}
 
@@ -29,66 +28,64 @@ def _save_hist(d: Dict[str, float]):
         with open(HIST_PATH, "w", encoding="utf-8") as f:
             json.dump(d, f)
     except Exception:
-        # Best-effort only; ignore IO errors on Hobby
         pass
 
 class MemeFeedCog(commands.Cog, name="Meme Feed"):
     """
-    Lightweight meme poster for #memes using Reddit's public JSON endpoints.
-    Reads settings from env/config:
-      - cfg.MEMES_ENABLED (bool via ENABLE_MEME_FEED)
-      - cfg.MEME_CHANNEL_ID (int)
-      - cfg.MEME_INTERVAL_MIN (int, default 120)
-      - optional: MEME_SUBREDDITS (comma list), default: memes,dankmemes,ProgrammerHumor
+    Consolidated under /memes:
+      - config | start | stop | now
     """
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.enabled: bool = bool(getattr(cfg, "MEMES_ENABLED", False))
         self.channel_id: int = int(getattr(cfg, "MEME_CHANNEL_ID", 0) or 0)
         self.interval_min: int = max(15, int(getattr(cfg, "MEME_INTERVAL_MIN", 120) or 120))
-
         subs_env = os.getenv("MEME_SUBREDDITS", "memes,dankmemes,ProgrammerHumor")
         self.subreddits: List[str] = [s.strip() for s in subs_env.split(",") if s.strip()]
-
         self.hist: Dict[str, float] = _load_hist()
 
+        # Group
+        self.memes = app_commands.Group(name="memes", description="Trending meme feed tools")
+        self.memes.command(name="config", description="Show meme feed settings")(self._config)
+        self.memes.command(name="start", description="(Admin) Enable scheduled memes in a channel")(self._start)
+        self.memes.command(name="stop", description="(Admin) Disable scheduled memes")(self._stop)
+        self.memes.command(name="now", description="(Admin) Post one meme now")(self._now)
+
     async def cog_load(self):
-        # Start loop only when enabled and a channel is configured
         if self.enabled and self.channel_id and self.subreddits:
             self.poster.start()
+        try:
+            self.bot.tree.add_command(self.memes)
+        except app_commands.CommandAlreadyRegistered:
+            pass
 
     def cog_unload(self):
         if self.poster.is_running():
             self.poster.cancel()
+        try:
+            self.bot.tree.remove_command("memes", type=discord.AppCommandType.chat_input)
+        except Exception:
+            pass
 
-    # Runs every 5 minutes; will post only when interval elapsed
+    # ---- loop every 5m; post only when interval elapsed ----
     @tasks.loop(minutes=5)
     async def poster(self):
         if not self.enabled or not self.channel_id or not self.subreddits:
             return
-
         now = time.time()
         last = float(self.hist.get("_last_ts", 0))
         if now - last < self.interval_min * 60:
             return
-
         ch = self.bot.get_channel(self.channel_id)
         if not isinstance(ch, (discord.TextChannel, discord.Thread)):
             return
-
         post = await self._pick_meme()
         if not post:
             return
-
         title, url, permalink = post
         try:
             if url.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-                emb = discord.Embed(
-                    title=title,
-                    url=f"https://reddit.com{permalink}",
-                    color=discord.Color.green()
-                )
+                emb = discord.Embed(title=title, url=f"https://reddit.com{permalink}", color=discord.Color.green())
                 emb.set_image(url=url)
                 emb.set_footer(text="From the feed • M.O.R.P.H.E.U.S. is watching")
                 await ch.send(embed=emb)
@@ -96,26 +93,19 @@ class MemeFeedCog(commands.Cog, name="Meme Feed"):
                 await ch.send(f"**{title}**\n{url}\nhttps://reddit.com{permalink}")
         except Exception:
             return
-
         self.hist["_last_ts"] = now
         _save_hist(self.hist)
 
     async def _pick_meme(self) -> Optional[tuple[str, str, str]]:
-        # Get a batch and choose first new, SFW-ish candidate
         sub = random.choice(self.subreddits)
         headers = {"User-Agent": "morpheus-meme-feed/1.0"}
         try:
-            r = requests.get(
-                f"https://www.reddit.com/r/{sub}/top.json?limit=60&t=day",
-                headers=headers,
-                timeout=12
-            )
+            r = requests.get(f"https://www.reddit.com/r/{sub}/top.json?limit=60&t=day", headers=headers, timeout=12)
             if r.status_code != 200:
                 return None
             data = r.json()
         except Exception:
             return None
-
         candidates = []
         for child in data.get("data", {}).get("children", []):
             d = child.get("data", {})
@@ -130,18 +120,15 @@ class MemeFeedCog(commands.Cog, name="Meme Feed"):
             if key in self.hist:
                 continue
             candidates.append((key, title, url, perm))
-
         random.shuffle(candidates)
         for key, title, url, perm in candidates:
-            self.hist[key] = time.time()  # remember
-            _save_hist(self.hist)         # best-effort write
+            self.hist[key] = time.time()
+            _save_hist(self.hist)
             return title, url, perm
         return None
 
-    # ---- Admin slash commands ----
-
-    @app_commands.command(name="memes_config", description="Show meme feed settings")
-    async def memes_config(self, itx: discord.Interaction):
+    # ---- /memes subcommands ----
+    async def _config(self, itx: discord.Interaction):
         await itx.response.send_message(
             f"**Meme Feed**\n"
             f"- enabled: `{self.enabled}`\n"
@@ -152,50 +139,39 @@ class MemeFeedCog(commands.Cog, name="Meme Feed"):
             ephemeral=True
         )
 
-    @app_commands.command(name="memes_start", description="(Admin) Enable scheduled memes in a channel")
     @app_commands.describe(channel="Channel to post in", interval_min="Minutes between posts (>=15)")
-    async def memes_start(self, itx: discord.Interaction, channel: discord.TextChannel, interval_min: int = 120):
+    async def _start(self, itx: discord.Interaction, channel: discord.TextChannel, interval_min: int = 120):
         if not (isinstance(itx.user, discord.Member) and itx.user.guild_permissions.manage_guild):
             await itx.response.send_message("Admins only.", ephemeral=True); return
-
         self.channel_id = channel.id
         self.interval_min = max(15, int(interval_min))
         self.enabled = True
-
         if not self.poster.is_running():
             self.poster.start()
-
         await itx.response.send_message(
             f"✅ Meme feed enabled in {channel.mention} every **{self.interval_min}m**.",
             ephemeral=True
         )
 
-    @app_commands.command(name="memes_stop", description="(Admin) Disable scheduled memes")
-    async def memes_stop(self, itx: discord.Interaction):
+    async def _stop(self, itx: discord.Interaction):
         if not (isinstance(itx.user, discord.Member) and itx.user.guild_permissions.manage_guild):
             await itx.response.send_message("Admins only.", ephemeral=True); return
-
         self.enabled = False
         if self.poster.is_running():
             self.poster.cancel()
         await itx.response.send_message("🛑 Meme feed stopped.", ephemeral=True)
 
-    @app_commands.command(name="memes_now", description="(Admin) Post one meme now")
-    async def memes_now(self, itx: discord.Interaction):
+    async def _now(self, itx: discord.Interaction):
         if not (isinstance(itx.user, discord.Member) and itx.user.guild_permissions.manage_guild):
             await itx.response.send_message("Admins only.", ephemeral=True); return
-
-        # temporarily ensure channel is valid
         ch = self.bot.get_channel(self.channel_id)
         if not isinstance(ch, (discord.TextChannel, discord.Thread)):
-            await itx.response.send_message("No channel set. Use `/memes_start`.", ephemeral=True)
+            await itx.response.send_message("No channel set. Use `/memes start`.", ephemeral=True)
             return
-
         post = await self._pick_meme()
         if not post:
             await itx.response.send_message("No fresh meme found right now 🙃", ephemeral=True)
             return
-
         title, url, perm = post
         try:
             if url.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):

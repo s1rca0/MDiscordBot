@@ -1,4 +1,4 @@
-# moderation_cog.py
+# cogs/moderation_cog.py
 from __future__ import annotations
 
 import os
@@ -6,77 +6,95 @@ import re
 import json
 import time
 from datetime import timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-from config import cfg  # module-level cfg that reads env
+# --- Safe config helpers (prefer cfg if present; fall back to env; then default) ---
+try:
+    from config import cfg as _cfg  # optional; code must not assume attributes exist
+except Exception:
+    _cfg = None  # type: ignore
 
-# ---------- env helpers / safe fallbacks ----------
-def _env_bool(name: str, default: bool) -> bool:
+def _get_str(name: str, default: str = "") -> str:
+    if _cfg is not None:
+        v = getattr(_cfg, name, None)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
     v = os.getenv(name)
-    return default if v is None else str(v).lower() in ("1", "true", "y", "yes", "on")
+    return v.strip() if isinstance(v, str) and v.strip() else default
 
-def _env_int(name: str, default: int) -> int:
+def _get_int(name: str, default: int = 0) -> int:
+    if _cfg is not None:
+        v = getattr(_cfg, name, None)
+        try:
+            if v is not None:
+                return int(v)
+        except Exception:
+            pass
     try:
-        v = os.getenv(name)
-        return default if v is None else int(v)
+        envv = os.getenv(name)
+        return int(envv) if envv is not None and envv != "" else default
     except Exception:
         return default
 
-def _env_str(name: str, default: str) -> str:
+def _get_bool(name: str, default: bool = False) -> bool:
+    if _cfg is not None:
+        v = getattr(_cfg, name, None)
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (str, int)):
+            s = str(v).strip().lower()
+            if s in {"1", "true", "yes", "on"}:
+                return True
+            if s in {"0", "false", "no", "off"}:
+                return False
     v = os.getenv(name)
-    return default if v is None else str(v)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
-# Defaults (prefer cfg.attr if present; otherwise env; otherwise constant)
-ALLOW_INVITES      = getattr(cfg, "ALLOW_INVITES", _env_bool("ALLOW_INVITES", False))
-MAX_MENTIONS       = getattr(cfg, "MAX_MENTIONS", _env_int("MAX_MENTIONS", 0))  # 0 disables
-SPAM_WINDOW_SECS   = getattr(cfg, "SPAM_WINDOW_SECS", _env_int("SPAM_WINDOW_SECS", 10))
-SPAM_MAX_MSGS      = getattr(cfg, "SPAM_MAX_MSGS", _env_int("SPAM_MAX_MSGS", 5))
-AUTOMOD_REGEX_RAW  = getattr(cfg, "AUTOMOD_REGEX", _env_str("AUTOMOD_REGEX", ""))
-STRIKE_THRESHOLDS  = getattr(cfg, "STRIKE_THRESHOLDS", _env_str("STRIKE_THRESHOLDS", "3:timeout:30,5:kick,7:ban"))
+# --- Moderation defaults (read once at import) ---
+ALLOW_INVITES_DEFAULT = _get_bool("ALLOW_INVITES", True)  # whether to allow invite links in chat
+MAX_MENTIONS_DEFAULT  = _get_int("MAX_MENTIONS", 5)       # > this count triggers a strike
+SPAM_WINDOW_SECS_DEF  = _get_int("SPAM_WINDOW_SECS", 10)  # rolling window for spam detector
+SPAM_MAX_MSGS_DEF     = _get_int("SPAM_MAX_MSGS", 5)      # max msgs allowed in the window
+AUTOMOD_REGEX_RAW     = _get_str("AUTOMOD_REGEX", "")     # comma-separated regex list
+STRIKE_THRESHOLDS_RAW = _get_str("STRIKE_THRESHOLDS", "3:timeout:30,5:kick,7:ban")
 
-DATA_DIR = "data"
+DATA_DIR     = "data"
 MOD_CFG_PATH = os.path.join(DATA_DIR, "mod_config.json")
 WARNS_PATH   = os.path.join(DATA_DIR, "warnings.json")
 STRIKES_PATH = os.path.join(DATA_DIR, "strikes.json")
 
-DEFAULT_AUTOMOD_CFG = {
-    "log_channel_id": 0,                     # set via /setlogchannel
-    "allow_invites": ALLOW_INVITES,          # env default
-    "max_mentions": MAX_MENTIONS,
-    "spam_window_secs": SPAM_WINDOW_SECS,
-    "spam_max_msgs": SPAM_MAX_MSGS,
-    "regex_list": [p.strip() for p in AUTOMOD_REGEX_RAW.split(",") if p.strip()],
-}
-
-# ---------- util io ----------
 def _load_json(path: str, fallback):
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return fallback
 
 def _save_json(path: str, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 def _safe_str(x: Any, limit=512) -> str:
     s = str(x)
     return (s[:limit] + "…") if len(s) > limit else s
 
-# ---------- strike policy ----------
-def _parse_strike_policy(s: str):
+def _parse_regex_list(raw: str) -> List[str]:
+    return [p.strip() for p in (raw or "").split(",") if p.strip()]
+
+def _parse_strike_policy(s: str) -> List[Tuple[int, str, Optional[int]]]:
     """
     Parse STRIKE_THRESHOLDS like:  "3:timeout:30,5:kick,7:ban"
-    -> list[(threshold:int, action:str, minutes:int|None)]
+    -> list of (threshold:int, action:str, minutes:int|None)
     """
-    rules = []
-    for part in filter(None, s.split(",")):
+    out: List[Tuple[int, str, Optional[int]]] = []
+    for part in filter(None, (s or "").split(",")):
         pieces = [p.strip() for p in part.split(":")]
         if len(pieces) < 2:
             continue
@@ -85,32 +103,57 @@ def _parse_strike_policy(s: str):
         except Exception:
             continue
         action = pieces[1].lower()
-        mins = int(pieces[2]) if len(pieces) >= 3 and action == "timeout" else None
-        rules.append((thr, action, mins))
-    rules.sort(key=lambda x: x[0])
-    return rules
+        mins = None
+        if action == "timeout" and len(pieces) >= 3:
+            try:
+                mins = int(pieces[2])
+            except Exception:
+                mins = 5
+        out.append((thr, action, mins))
+    out.sort(key=lambda x: x[0])
+    return out
 
-STRIKE_RULES = _parse_strike_policy(STRIKE_THRESHOLDS)
+DEFAULT_AUTOMOD_CFG = {
+    "log_channel_id": 0,
+    "allow_invites": ALLOW_INVITES_DEFAULT,
+    "max_mentions": MAX_MENTIONS_DEFAULT,
+    "spam_window_secs": SPAM_WINDOW_SECS_DEF,
+    "spam_max_msgs": SPAM_MAX_MSGS_DEF,
+    "regex_list": _parse_regex_list(AUTOMOD_REGEX_RAW),
+}
 
-# ---------- Cog ----------
+STRIKE_RULES = _parse_strike_policy(STRIKE_THRESHOLDS_RAW)
+
 class ModerationCog(commands.Cog, name="Moderation"):
     """
-    Core moderation + automod + logs + warnings + strike policy.
+    Core moderation + lightweight automod.
+      • Automod: invite links (optional), regex blacklist, excessive mentions, basic spam
+      • Warnings & strikes with strike policy (timeout/kick/ban)
+      • Log channel, purge, slowmode, lock/unlock, warn/warnings/clear, mute/unmute, kick/ban/unban
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.cfg: Dict[str, Any] = _load_json(MOD_CFG_PATH, DEFAULT_AUTOMOD_CFG.copy())
-        self.warns: Dict[str, Dict[str, Any]] = _load_json(WARNS_PATH, {})   # guild_id -> { user_id: [ {ts, reason}, ... ] }
-        self.strikes: Dict[str, Dict[str, int]] = _load_json(STRIKES_PATH, {})  # guild_id -> { user_id: int }
-        self._spam_buckets: Dict[int, List[float]] = {}  # user_id -> timestamps
 
-        # compile regex list
-        self._regexes = []
+        # Load or seed config/state
+        self.cfg: Dict[str, Any] = _load_json(MOD_CFG_PATH, DEFAULT_AUTOMOD_CFG.copy())
+        # Ensure required keys exist (in case file is older)
+        for k, v in DEFAULT_AUTOMOD_CFG.items():
+            self.cfg.setdefault(k, v)
+
+        self.warns: Dict[str, Dict[str, Any]]   = _load_json(WARNS_PATH, {})
+        self.strikes: Dict[str, Dict[str, int]] = _load_json(STRIKES_PATH, {})
+
+        # Spam tracking: user_id -> [timestamps]
+        self._spam_buckets: Dict[int, List[float]] = {}
+
+        # Compile regexes safely
+        self._regexes: List[re.Pattern[str]] = []
         for pat in self.cfg.get("regex_list", []):
             try:
                 self._regexes.append(re.compile(pat))
             except re.error:
+                # skip invalid patterns silently
                 pass
 
     # ---------- Utilities ----------
@@ -118,7 +161,8 @@ class ModerationCog(commands.Cog, name="Moderation"):
         if not guild:
             return None
         ch_id = int(self.cfg.get("log_channel_id", 0) or 0)
-        return guild.get_channel(ch_id) if ch_id else None
+        ch = guild.get_channel(ch_id) if ch_id else None
+        return ch if isinstance(ch, discord.TextChannel) else None
 
     async def _log(self, guild: Optional[discord.Guild], title: str, desc: str):
         ch = self._log_channel(guild)
@@ -131,12 +175,13 @@ class ModerationCog(commands.Cog, name="Moderation"):
         except Exception:
             pass
 
-    def _add_warning(self, guild_id: int, user_id: int, reason: str):
-        gkey = str(guild_id); ukey = str(user_id)
-        self.warns.setdefault(gkey, {}).setdefault(ukey, []).append({"ts": int(time.time()), "reason": reason})
+    def _add_warning(self, guild_id: int, user_id: int, reason: str) -> int:
+        gkey, ukey = str(guild_id), str(user_id)
+        self.warns.setdefault(gkey, {}).setdefault(ukey, []).append(
+            {"ts": int(time.time()), "reason": reason}
+        )
         _save_json(WARNS_PATH, self.warns)
 
-        # also add one strike
         current = self.strikes.setdefault(gkey, {}).get(ukey, 0) + 1
         self.strikes[gkey][ukey] = current
         _save_json(STRIKES_PATH, self.strikes)
@@ -158,16 +203,16 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
     async def _apply_strike_policy(self, member: discord.Member, strikes_now: int, reason: str):
         """
-        On reaching N strikes, apply rule with highest threshold <= N.
+        On reaching N strikes, apply the highest threshold action <= N.
         """
-        rule = None
+        rule: Optional[Tuple[int, str, Optional[int]]] = None
         for thr, action, mins in STRIKE_RULES:
             if strikes_now >= thr:
                 rule = (thr, action, mins)
         if not rule:
             return None
 
-        thr, action, mins = rule
+        _, action, mins = rule
         guild = member.guild
         actor = f"AutoMod (strikes={strikes_now})"
 
@@ -210,6 +255,17 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
         return None
 
+    async def _maybe_policy(self, author: discord.Member | discord.User, guild: discord.Guild, strikes: int, reason: str):
+        # Try to resolve a full Member object before applying server-side actions
+        member: Optional[discord.Member] = guild.get_member(author.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(author.id)
+            except Exception:
+                member = None
+        if member:
+            await self._apply_strike_policy(member, strikes, reason)
+
     # ---------- Automod ----------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -220,18 +276,21 @@ class ModerationCog(commands.Cog, name="Moderation"):
         content = message.content or ""
         content_l = content.lower()
 
-        # 1) Delete unwanted invites
-        if not self.cfg.get("allow_invites", False):
+        # 1) Invite links (if disallowed)
+        if not bool(self.cfg.get("allow_invites", True)):
             if ("discord.gg/" in content_l) or ("discord.com/invite/" in content_l):
                 try:
                     await message.delete()
-                    strikes = self._add_warning(message.guild.id, message.author.id, "Invite link")
-                    await self._log(message.guild, "AutoMod: Invite removed",
-                                    f"Author: {message.author.mention}\nChannel: {message.channel.mention}\n"
-                                    f"Strikes: {strikes}\nContent: {_safe_str(content)}")
-                    await self._maybe_policy(message.author, message.guild, strikes, "Invite link")
                 except Exception:
                     pass
+                strikes = self._add_warning(message.guild.id, message.author.id, "Invite link")
+                await self._log(
+                    message.guild,
+                    "AutoMod: Invite removed",
+                    f"Author: {message.author.mention}\nChannel: {message.channel.mention}\n"
+                    f"Strikes: {strikes}\nContent: {_safe_str(content)}"
+                )
+                await self._maybe_policy(message.author, message.guild, strikes, "Invite link")
                 return
 
         # 2) Regex blacklist
@@ -242,48 +301,47 @@ class ModerationCog(commands.Cog, name="Moderation"):
                 except Exception:
                     pass
                 strikes = self._add_warning(message.guild.id, message.author.id, f"Blacklist: /{rx.pattern}/")
-                await self._log(message.guild, "AutoMod: Blacklist hit",
-                                f"Author: {message.author.mention}\nChannel: {message.channel.mention}\n"
-                                f"Strikes: {strikes}\nPattern: `{rx.pattern}`")
+                await self._log(
+                    message.guild,
+                    "AutoMod: Blacklist hit",
+                    f"Author: {message.author.mention}\nChannel: {message.channel.mention}\n"
+                    f"Strikes: {strikes}\nPattern: `{rx.pattern}`"
+                )
                 await self._maybe_policy(message.author, message.guild, strikes, f"Blacklist: /{rx.pattern}/")
                 return
 
         # 3) Excessive mentions
-        max_mentions = int(self.cfg.get("max_mentions", 5))
+        max_mentions = int(self.cfg.get("max_mentions", MAX_MENTIONS_DEFAULT))
         if max_mentions > 0 and len(message.mentions) > max_mentions:
             strikes = self._add_warning(message.guild.id, message.author.id, f"Excessive mentions: {len(message.mentions)}")
-            await self._log(message.guild, "AutoMod: Excessive mentions",
-                            f"Author: {message.author.mention}\nMentions: {len(message.mentions)}\n"
-                            f"Channel: {message.channel.mention}\nStrikes: {strikes}")
+            await self._log(
+                message.guild,
+                "AutoMod: Excessive mentions",
+                f"Author: {message.author.mention}\nMentions: {len(message.mentions)}\n"
+                f"Channel: {message.channel.mention}\nStrikes: {strikes}"
+            )
             await self._maybe_policy(message.author, message.guild, strikes, "Excessive mentions")
 
-        # 4) Simple spam rate-limit per user (message count in window)
-        window = int(self.cfg.get("spam_window_secs", 10))
-        max_msgs = int(self.cfg.get("spam_max_msgs", 5))
-        now = time.time()
-        bucket = self._spam_buckets.setdefault(message.author.id, [])
-        bucket.append(now)
-        self._spam_buckets[message.author.id] = [t for t in bucket if now - t <= window]
-        if len(self._spam_buckets[message.author.id]) > max_msgs:
-            strikes = self._add_warning(message.guild.id, message.author.id, "Spam detected")
-            await self._log(message.guild, "AutoMod: Spam detected",
-                            f"Author: {message.author.mention}\nChannel: {message.channel.mention}\n"
-                            f"Window: {window}s > {max_msgs} msgs\nStrikes: {strikes}")
-            await self._maybe_policy(message.author, message.guild, strikes, "Spam")
+        # 4) Basic spam rate limit
+        window = int(self.cfg.get("spam_window_secs", SPAM_WINDOW_SECS_DEF))
+        max_msgs = int(self.cfg.get("spam_max_msgs", SPAM_MAX_MSGS_DEF))
+        if window > 0 and max_msgs > 0:
+            now = time.time()
+            bucket = self._spam_buckets.setdefault(message.author.id, [])
+            bucket.append(now)
+            self._spam_buckets[message.author.id] = [t for t in bucket if now - t <= window]
+            if len(self._spam_buckets[message.author.id]) > max_msgs:
+                strikes = self._add_warning(message.guild.id, message.author.id, "Spam detected")
+                await self._log(
+                    message.guild,
+                    "AutoMod: Spam detected",
+                    f"Author: {message.author.mention}\nChannel: {message.channel.mention}\n"
+                    f"Window: {window}s > {max_msgs} msgs\nStrikes: {strikes}"
+                )
+                await self._maybe_policy(message.author, message.guild, strikes, "Spam")
 
-    async def _maybe_policy(self, author: discord.Member | discord.User, guild: discord.Guild, strikes: int, reason: str):
-        # Only apply server actions if we have a full Member (not just a User)
-        member: Optional[discord.Member] = guild.get_member(author.id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(author.id)
-            except Exception:
-                member = None
-        if member:
-            await self._apply_strike_policy(member, strikes, reason)
-
-    # ---------- Owner / Admin config ----------
-    @commands.hybrid_command(name="setlogchannel", description="(Owner/Admin) Set this channel for moderation logs")
+    # ---------- Admin/Owner config ----------
+    @commands.hybrid_command(name="setlogchannel", description="(Admin) Set this channel for moderation logs")
     @commands.has_permissions(manage_guild=True)
     async def setlogchannel(self, ctx: commands.Context):
         if ctx.guild is None:
@@ -293,11 +351,12 @@ class ModerationCog(commands.Cog, name="Moderation"):
         _save_json(MOD_CFG_PATH, self.cfg)
         await ctx.reply(f"✅ Log channel set to {ctx.channel.mention}", mention_author=False)
 
-    @commands.hybrid_command(name="modconfig", description="(Owner/Admin) View or update automod config")
+    @commands.hybrid_command(name="modconfig", description="(Admin) View or update automod config")
     @commands.has_permissions(manage_guild=True)
     async def modconfig(self, ctx: commands.Context, key: Optional[str] = None, value: Optional[str] = None):
         """
-        View: /modconfig
+        View current config:
+          /modconfig
         Update examples:
           /modconfig key:allow_invites value:true
           /modconfig key:max_mentions value:8
@@ -315,28 +374,31 @@ class ModerationCog(commands.Cog, name="Moderation"):
             await ctx.reply(f"Unknown key. Valid: {', '.join(sorted(valid))}", mention_author=False)
             return
 
-        v = value
+        v_out: Any
         if key == "allow_invites":
-            v = value.lower() in ("true", "1", "yes", "y", "on")
+            if value is None:
+                await ctx.reply("Value required: true/false", mention_author=False); return
+            v_out = str(value).lower() in {"1", "true", "yes", "y", "on"}
         else:
             try:
-                v = int(value)
+                v_out = int(value)
             except Exception:
                 await ctx.reply("Value must be an integer.", mention_author=False)
                 return
 
-        self.cfg[key] = v
+        self.cfg[key] = v_out
         _save_json(MOD_CFG_PATH, self.cfg)
-        await ctx.reply(f"✅ Updated `{key}` to `{v}`", mention_author=False)
+        await ctx.reply(f"✅ Updated `{key}` to `{v_out}`", mention_author=False)
 
-    # ----- Message management -----
+    # ---------- Message management ----------
     @commands.hybrid_command(name="purge", description="(Mod) Bulk delete N messages")
     @commands.has_permissions(manage_messages=True)
     async def purge(self, ctx: commands.Context, count: commands.Range[int, 1, 200]):
-        deleted = await ctx.channel.purge(limit=count+1)  # +1 to remove the command message
-        await self._log(ctx.guild, "Purge", f"Channel: {ctx.channel.mention}\nDeleted: {len(deleted)-1} msgs\nBy: {ctx.author.mention}")
+        deleted = await ctx.channel.purge(limit=count + 1)  # +1 to remove the command message
+        await self._log(ctx.guild, "Purge",
+                        f"Channel: {ctx.channel.mention}\nDeleted: {len(deleted) - 1} msgs\nBy: {ctx.author.mention}")
         try:
-            await ctx.send(f"🧹 Deleted {len(deleted)-1} messages.", delete_after=5)
+            await ctx.send(f"🧹 Deleted {len(deleted) - 1} messages.", delete_after=5)
         except Exception:
             pass
 
@@ -344,7 +406,8 @@ class ModerationCog(commands.Cog, name="Moderation"):
     @commands.has_permissions(manage_channels=True)
     async def slowmode(self, ctx: commands.Context, seconds: commands.Range[int, 0, 21600] = 0):
         await ctx.channel.edit(slowmode_delay=seconds)
-        await self._log(ctx.guild, "Slowmode", f"Channel: {ctx.channel.mention}\nSlowmode: {seconds}s\nBy: {ctx.author.mention}")
+        await self._log(ctx.guild, "Slowmode",
+                        f"Channel: {ctx.channel.mention}\nSlowmode: {seconds}s\nBy: {ctx.author.mention}")
         await ctx.reply(f"🐢 Slowmode set to **{seconds}s** here.", mention_author=False)
 
     @commands.hybrid_command(name="lock", description="(Mod) Lock this channel for @everyone")
@@ -353,7 +416,8 @@ class ModerationCog(commands.Cog, name="Moderation"):
         overwrites = ctx.channel.overwrites_for(ctx.guild.default_role)
         overwrites.send_messages = False
         await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=overwrites, reason=reason or "Channel locked")
-        await self._log(ctx.guild, "Lock", f"Channel: {ctx.channel.mention}\nBy: {ctx.author.mention}\nReason: {_safe_str(reason)}")
+        await self._log(ctx.guild, "Lock",
+                        f"Channel: {ctx.channel.mention}\nBy: {ctx.author.mention}\nReason: {_safe_str(reason)}")
         await ctx.reply("🔒 Channel locked.", mention_author=False)
 
     @commands.hybrid_command(name="unlock", description="(Mod) Unlock this channel for @everyone")
@@ -365,12 +429,13 @@ class ModerationCog(commands.Cog, name="Moderation"):
         await self._log(ctx.guild, "Unlock", f"Channel: {ctx.channel.mention}\nBy: {ctx.author.mention}")
         await ctx.reply("🔓 Channel unlocked.", mention_author=False)
 
-    # ----- Member actions -----
+    # ---------- Member actions ----------
     @commands.hybrid_command(name="warn", description="(Mod) Warn a member")
     @commands.has_permissions(moderate_members=True)
     async def warn(self, ctx: commands.Context, member: discord.Member, *, reason: str):
         strikes = self._add_warning(ctx.guild.id, member.id, reason)
-        await self._log(ctx.guild, "Warn", f"User: {member.mention}\nBy: {ctx.author.mention}\nReason: {_safe_str(reason)}\nStrikes: {strikes}")
+        await self._log(ctx.guild, "Warn",
+                        f"User: {member.mention}\nBy: {ctx.author.mention}\nReason: {_safe_str(reason)}\nStrikes: {strikes}")
         try:
             await member.send(f"You were warned in **{ctx.guild.name}** for: {reason}\nCurrent strikes: {strikes}")
         except Exception:
@@ -400,9 +465,10 @@ class ModerationCog(commands.Cog, name="Moderation"):
     @commands.has_permissions(moderate_members=True)
     async def mute(self, ctx: commands.Context, member: discord.Member, minutes: commands.Range[int, 1, 10080], *, reason: Optional[str] = None):
         try:
-            until = discord.utils.utcnow() + timedelta(minutes=minutes)
+            until = discord.utils.utcnow() + timedelta(minutes=int(minutes))
             await member.timeout(until, reason=reason or "Muted by moderator")
-            await self._log(ctx.guild, "Mute", f"User: {member.mention}\nBy: {ctx.author.mention}\nMinutes: {minutes}\nReason: {_safe_str(reason)}")
+            await self._log(ctx.guild, "Mute",
+                            f"User: {member.mention}\nBy: {ctx.author.mention}\nMinutes: {minutes}\nReason: {_safe_str(reason)}")
             await ctx.reply(f"🔇 Muted {member.mention} for {minutes} minute(s).", mention_author=False)
         except discord.Forbidden:
             await ctx.reply("I lack permission to mute that user.", mention_author=False)
