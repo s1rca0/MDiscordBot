@@ -4,7 +4,7 @@
 # - Public welcome embed in #welcome (or fallback)
 # - DM welcome (optional)
 # - /welcome_preview (owner or Manage Server)
-# - OPTIONAL: scheduled cryptic broadcasts into #void (AI or preset)
+# - OPTIONAL: scheduled cryptic broadcasts into #void (+ rotating images/GIFs)
 #
 from __future__ import annotations
 
@@ -16,40 +16,61 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
-# Optional AI (fails soft if missing)
-try:
-    from ai_provider import chat_completion  # stable wrapper in your repo
-except Exception:  # pragma: no cover
-    chat_completion = None  # type: ignore
-
 log = logging.getLogger(__name__)
 
 # ---------- env helpers ----------
 def _env_bool(name: str, default: bool = True) -> bool:
     v = os.getenv(name)
-    return default if v is None else str(v).strip().lower() in ("1", "true", "y", "yes", "on")
+    return default if v is None else str(v).lower() in ("1", "true", "y", "yes", "on")
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return int(str(os.getenv(name, default)).strip())
+        v = os.getenv(name)
+        return default if v is None else int(v)
     except Exception:
         return default
 
-def _env_list(name: str, fallback: List[str]) -> List[str]:
-    raw = os.getenv(name) or ""
-    xs = [s.strip() for s in raw.split(",") if s.strip()]
-    return xs or fallback
+def _env_csv(name: str) -> List[str]:
+    raw = os.getenv(name, "") or ""
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
-OWNER_USER_ID = _env_int("OWNER_USER_ID", 0)
+def _rotate(lst: List):
+    if lst:
+        lst.append(lst.pop(0))
 
-WELCOME_CHANNEL_ID = _env_int("WELCOME_CHANNEL_ID", 0)
+def _is_img(url: str) -> bool:
+    u = (url or "").lower()
+    return any(u.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"))
+
+# ---------- core env ----------
+OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "0") or 0)
+
+WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "0") or 0)
 DM_WELCOME_ENABLE = _env_bool("DM_WELCOME_ENABLE", True)
+
+DEFAULT_STEPS = [
+    "rules",
+    "welcome",
+    "announcements",
+    "introductions",
+    "faq",
+    "void",
+    "lobby",
+]
+WELCOME_STEPS: List[str] = [
+    s.strip() for s in (os.getenv("WELCOME_STEPS") or "").split(",") if s.strip()
+] or DEFAULT_STEPS
 
 # ---- #void scheduled broadcast controls ----
 VOID_BROADCAST_ENABLE = _env_bool("VOID_BROADCAST_ENABLE", False)
 VOID_BROADCAST_HOURS = _env_int("VOID_BROADCAST_HOURS", 72)  # every 3 days by default
-# Either use preset messages...
-_DEFAULT_VOID_MSGS = [
+
+# Optional rotating images/GIFs (comma-separated URLs)
+# Example: https://cdn.discordapp.com/.../image.png,https://.../clip.gif
+VOID_BROADCAST_IMAGES: List[str] = _env_csv("VOID_BROADCAST_IMAGES")
+
+# Default cryptic messages (comma-separated env can override)
+_default_void_msgs = [
     "The Void hums tonight. Those who listen may hear the door unlatch.",
     "Signals drift between worlds. Loyalty sharpens the signal; apathy dulls it.",
     "Beyond the welcome lies the work. The Inner Circle is not a place—it’s a decision.",
@@ -57,11 +78,10 @@ _DEFAULT_VOID_MSGS = [
     "The red pill is not a color. It is consent to see with both eyes open.",
     "Not all watchers are seen. Not all doors are locked.",
 ]
-VOID_BROADCAST_MESSAGES: List[str] = _env_list("VOID_BROADCAST_MESSAGES", _DEFAULT_VOID_MSGS)
+VOID_BROADCAST_MESSAGES: List[str] = [
+    s.strip() for s in (os.getenv("VOID_BROADCAST_MESSAGES") or "").split(",") if s.strip()
+] or _default_void_msgs
 
-# ...or ask the AI to generate each line
-VOID_BROADCAST_AI = _env_bool("VOID_BROADCAST_AI", False)
-VOID_BROADCAST_AI_TONE = (os.getenv("VOID_BROADCAST_AI_TONE") or "cryptic").strip().lower()
 
 # ---------- channel resolution helpers ----------
 def _find_channel(
@@ -89,14 +109,12 @@ def _find_channel(
 def _fmt_ch(ch: Optional[discord.TextChannel]) -> str:
     return ch.mention if isinstance(ch, discord.TextChannel) else "*(channel not found)*"
 
+
 # ---------- embeds ----------
 def _steps_embed(guild: discord.Guild, member: discord.Member) -> discord.Embed:
-    # Resolve commonly-used channels by provided WELCOME_STEPS (or defaults)
-    default_steps = ["rules", "welcome", "announcements", "introductions", "faq", "void", "lobby"]
-    steps = _env_list("WELCOME_STEPS", default_steps)
-
+    # Resolve commonly-used channels by provided WELCOME_STEPS
     by_name = {}
-    for n in steps:
+    for n in WELCOME_STEPS:
         ch, _ = _find_channel(guild, names=[n])
         by_name[n.lower()] = ch
 
@@ -109,7 +127,7 @@ def _steps_embed(guild: discord.Guild, member: discord.Member) -> discord.Embed:
         color=discord.Color.blurple(),
     )
 
-    lines: List[str] = []
+    lines = []
     if by_name.get("rules"):
         lines.append(f"• **Read the rules:** {_fmt_ch(by_name.get('rules'))}")
     if by_name.get("introductions"):
@@ -120,8 +138,13 @@ def _steps_embed(guild: discord.Guild, member: discord.Member) -> discord.Embed:
         lines.append(f"• **Server updates:** {_fmt_ch(by_name.get('announcements'))}")
     if by_name.get("faq"):
         lines.append(f"• **FAQ & quick answers:** {_fmt_ch(by_name.get('faq'))}")
+
+    # Special lore treatment for #void
     if by_name.get("void"):
-        lines.append(f"• **{_fmt_ch(by_name.get('void'))}** — signals drop here. Some are cryptic, all are intentional.")
+        lines.append(
+            f"• **{_fmt_ch(by_name.get('void'))}** — signals drop here. Some are cryptic, all are intentional."
+        )
+
     if by_name.get("welcome"):
         lines.append(f"• **Return point:** {_fmt_ch(by_name.get('welcome'))}")
 
@@ -131,6 +154,7 @@ def _steps_embed(guild: discord.Guild, member: discord.Member) -> discord.Embed:
     e.add_field(name="Start Here", value="\n".join(lines), inline=False)
     e.set_footer(text="“Choice is the first step to freedom. Ask /ask to begin.” — Morpheus")
     return e
+
 
 def _dm_embed(guild: discord.Guild, member: discord.Member) -> discord.Embed:
     rules_ch, _ = _find_channel(guild, names=["rules"])
@@ -144,40 +168,24 @@ def _dm_embed(guild: discord.Guild, member: discord.Member) -> discord.Embed:
             f"- Read the rules: {_fmt_ch(rules_ch)}\n"
             f"- Introduce yourself: {_fmt_ch(intro_ch)}\n"
             f"- Say hello in the lobby: {_fmt_ch(lobby_ch)}\n\n"
-            "Use **/ask** if you want a guide. Once promoted to **The Construct**, check **#the-construct** for free chat, "
-            "and opt into personalized memes with **/meme_tags**."
+            "Use `/ask` if you want a guide. When you are ready, the Inner Circle awaits."
         ),
         color=discord.Color.dark_teal(),
     )
     dm.set_footer(text="Keep notifications sane; follow only what you need.")
     return dm
 
-# ---------- AI text helper ----------
-async def _ai_void_line() -> Optional[str]:
-    if not (VOID_BROADCAST_AI and chat_completion):
-        return None
-    system = (
-        "You are Morpheus addressing a Discord server's #void. "
-        "Write ONE short, self-contained line (max 140 chars) in a "
-        f"{VOID_BROADCAST_AI_TONE} tone. No hashtags. No quotes."
-    )
-    try:
-        text = await chat_completion(system_prompt=system, messages=[{"role": "user", "content": "Transmit the signal."}], max_tokens=60)
-        if text:
-            return text.strip().splitlines()[0][:140]
-    except Exception as e:
-        log.debug("AI void line failed: %s", e)
-    return None
 
 # ---------- Cog ----------
 class OnboardingFastTrack(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Start #void broadcaster if enabled
         if VOID_BROADCAST_ENABLE:
             self.void_broadcaster.start()
 
     def cog_unload(self):
-        if VOID_BROADCAST_ENABLE:
+        if VOID_BROADCAST_ENABLE and self.void_broadcaster.is_running():
             self.void_broadcaster.cancel()
 
     # ----- Welcome listener -----
@@ -193,7 +201,7 @@ class OnboardingFastTrack(commands.Cog):
             names=["welcome", "getting-started"],
         )
 
-        # Public welcome (best-effort)
+        # Public welcome
         try:
             embed = _steps_embed(guild, member)
             if isinstance(welcome_ch, discord.TextChannel):
@@ -262,7 +270,7 @@ class OnboardingFastTrack(commands.Cog):
                     f"(Preview for **{target.display_name}**)",
                     embed=_steps_embed(interaction.guild, target),
                 )
-                results.append("Public: sent")
+                results.append(f"Public: sent")
             except Exception as e:
                 results.append(f"Public failed: {e.__class__.__name__}")
 
@@ -273,24 +281,33 @@ class OnboardingFastTrack(commands.Cog):
             except Exception as e:
                 results.append(f"DM failed: {e.__class__.__name__}")
 
-        await interaction.followup.send("Preview result:\n- " + "\n- ".join(results), ephemeral=True)
+        await interaction.followup.send("Preview result:\n- " + "\n".join(f"- {r}" for r in results), ephemeral=True)
 
     # ----- #void broadcaster (optional) -----
     @tasks.loop(hours=VOID_BROADCAST_HOURS)
     async def void_broadcaster(self):
+        # Iterate all guilds the bot is in and post into #void (first match)
         for guild in self.bot.guilds:
             void_ch, _ = _find_channel(guild, names=["void"])
-            if not isinstance(void_ch, discord.TextChannel):
-                continue
-            try:
-                text = await _ai_void_line()
-                if not text:
-                    # rotate preset list
-                    text = VOID_BROADCAST_MESSAGES[0]
-                    VOID_BROADCAST_MESSAGES.append(VOID_BROADCAST_MESSAGES.pop(0))
-                await void_ch.send(f"**[signal]** {text}")
-            except Exception as e:
-                log.debug("void broadcast failed in %s: %s", guild.name, e)
+            if isinstance(void_ch, discord.TextChannel):
+                try:
+                    text = VOID_BROADCAST_MESSAGES[0] if VOID_BROADCAST_MESSAGES else "Signal tremor."
+                    _rotate(VOID_BROADCAST_MESSAGES)
+
+                    asset = VOID_BROADCAST_IMAGES[0] if VOID_BROADCAST_IMAGES else None
+                    if asset and _is_img(asset):
+                        emb = discord.Embed(color=discord.Color.dark_teal())
+                        emb.set_image(url=asset)
+                        await void_ch.send(f"**[signal]** {text}", embed=emb)
+                        _rotate(VOID_BROADCAST_IMAGES)
+                    elif asset:
+                        # e.g., mp4 or unknown extension → just post link under the text
+                        await void_ch.send(f"**[signal]** {text}\n{asset}")
+                        _rotate(VOID_BROADCAST_IMAGES)
+                    else:
+                        await void_ch.send(f"**[signal]** {text}")
+                except Exception as e:
+                    log.debug("void broadcast failed in %s: %s", guild.name, e)
 
     @void_broadcaster.before_loop
     async def _before_void_broadcast(self):
@@ -303,20 +320,33 @@ class OnboardingFastTrack(commands.Cog):
         if not interaction.guild:
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
+
         void_ch, _ = _find_channel(interaction.guild, names=["void"])
         if not isinstance(void_ch, discord.TextChannel):
             await interaction.response.send_message("No #void channel found.", ephemeral=True)
             return
+
         await interaction.response.defer(ephemeral=True)
         try:
-            text = await _ai_void_line()
-            if not text:
-                text = VOID_BROADCAST_MESSAGES[0]
-                VOID_BROADCAST_MESSAGES.append(VOID_BROADCAST_MESSAGES.pop(0))
-            await void_ch.send(f"**[signal]** {text}")
-            await interaction.followup.send("Sent.", ephemeral=True)
+            text = VOID_BROADCAST_MESSAGES[0] if VOID_BROADCAST_MESSAGES else "Signal tremor."
+            _rotate(VOID_BROADCAST_MESSAGES)
+
+            asset = VOID_BROADCAST_IMAGES[0] if VOID_BROADCAST_IMAGES else None
+            if asset and _is_img(asset):
+                emb = discord.Embed(color=discord.Color.dark_teal())
+                emb.set_image(url=asset)
+                await void_ch.send(f"**[signal]** {text}", embed=emb)
+                _rotate(VOID_BROADCAST_IMAGES)
+            elif asset:
+                await void_ch.send(f"**[signal]** {text}\n{asset}")
+                _rotate(VOID_BROADCAST_IMAGES)
+            else:
+                await void_ch.send(f"**[signal]** {text}")
+
+            await interaction.followup.send("Sent. ✅", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Failed: {e.__class__.__name__}", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OnboardingFastTrack(bot))
