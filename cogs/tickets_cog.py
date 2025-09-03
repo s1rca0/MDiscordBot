@@ -1,4 +1,19 @@
 # tickets_cog.py
+# top of cogs/tickets_cog.py
+import os
+from typing import List
+from config import cfg
+
+def _parse_roles(env: str) -> List[int]:
+    out = []
+    for p in (env or "").replace(" ", "").split(","):
+        if p.isdigit():
+            out.append(int(p))
+    return out
+
+TICKET_STAFF_ROLES = getattr(cfg, "TICKET_STAFF_ROLES", None)
+if TICKET_STAFF_ROLES is None:
+    TICKET_STAFF_ROLES = _parse_roles(os.getenv("TICKET_STAFF_ROLES", ""))  # [] if unset
 import os
 import io
 import json

@@ -1,17 +1,42 @@
 # moderation_cog.py
-import re
+from __future__ import annotations
+
 import os
+import re
 import json
 import time
-from typing import Optional, Dict, Any
+from datetime import timedelta
+from typing import Optional, Dict, Any, List
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-from config import BotConfig
+from config import cfg  # module-level cfg that reads env
 
-cfg = BotConfig()  # read env/.env once here
+# ---------- env helpers / safe fallbacks ----------
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    return default if v is None else str(v).lower() in ("1", "true", "y", "yes", "on")
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = os.getenv(name)
+        return default if v is None else int(v)
+    except Exception:
+        return default
+
+def _env_str(name: str, default: str) -> str:
+    v = os.getenv(name)
+    return default if v is None else str(v)
+
+# Defaults (prefer cfg.attr if present; otherwise env; otherwise constant)
+ALLOW_INVITES      = getattr(cfg, "ALLOW_INVITES", _env_bool("ALLOW_INVITES", False))
+MAX_MENTIONS       = getattr(cfg, "MAX_MENTIONS", _env_int("MAX_MENTIONS", 0))  # 0 disables
+SPAM_WINDOW_SECS   = getattr(cfg, "SPAM_WINDOW_SECS", _env_int("SPAM_WINDOW_SECS", 10))
+SPAM_MAX_MSGS      = getattr(cfg, "SPAM_MAX_MSGS", _env_int("SPAM_MAX_MSGS", 5))
+AUTOMOD_REGEX_RAW  = getattr(cfg, "AUTOMOD_REGEX", _env_str("AUTOMOD_REGEX", ""))
+STRIKE_THRESHOLDS  = getattr(cfg, "STRIKE_THRESHOLDS", _env_str("STRIKE_THRESHOLDS", "3:timeout:30,5:kick,7:ban"))
 
 DATA_DIR = "data"
 MOD_CFG_PATH = os.path.join(DATA_DIR, "mod_config.json")
@@ -19,14 +44,15 @@ WARNS_PATH   = os.path.join(DATA_DIR, "warnings.json")
 STRIKES_PATH = os.path.join(DATA_DIR, "strikes.json")
 
 DEFAULT_AUTOMOD_CFG = {
-    "log_channel_id": 0,                   # set via /setlogchannel
-    "allow_invites": cfg.ALLOW_INVITES,    # env default
-    "max_mentions": cfg.MAX_MENTIONS,
-    "spam_window_secs": cfg.SPAM_WINDOW_SECS,
-    "spam_max_msgs": cfg.SPAM_MAX_MSGS,
-    "regex_list": [p.strip() for p in cfg.AUTOMOD_REGEX.split(",") if p.strip()],
+    "log_channel_id": 0,                     # set via /setlogchannel
+    "allow_invites": ALLOW_INVITES,          # env default
+    "max_mentions": MAX_MENTIONS,
+    "spam_window_secs": SPAM_WINDOW_SECS,
+    "spam_max_msgs": SPAM_MAX_MSGS,
+    "regex_list": [p.strip() for p in AUTOMOD_REGEX_RAW.split(",") if p.strip()],
 }
 
+# ---------- util io ----------
 def _load_json(path: str, fallback):
     try:
         with open(path, "r") as f:
@@ -43,26 +69,30 @@ def _safe_str(x: Any, limit=512) -> str:
     s = str(x)
     return (s[:limit] + "…") if len(s) > limit else s
 
+# ---------- strike policy ----------
 def _parse_strike_policy(s: str):
     """
-    Parse env STRIKE_THRESHOLDS like:
-      "3:timeout:30,5:kick,7:ban"
-    -> list of (threshold:int, action:str, minutes:int|None) sorted by threshold
+    Parse STRIKE_THRESHOLDS like:  "3:timeout:30,5:kick,7:ban"
+    -> list[(threshold:int, action:str, minutes:int|None)]
     """
     rules = []
     for part in filter(None, s.split(",")):
         pieces = [p.strip() for p in part.split(":")]
         if len(pieces) < 2:
             continue
-        thr = int(pieces[0])
+        try:
+            thr = int(pieces[0])
+        except Exception:
+            continue
         action = pieces[1].lower()
-        mins = int(pieces[2]) if len(pieces) >= 3 and pieces[1] == "timeout" else None
+        mins = int(pieces[2]) if len(pieces) >= 3 and action == "timeout" else None
         rules.append((thr, action, mins))
     rules.sort(key=lambda x: x[0])
     return rules
 
-STRIKE_RULES = _parse_strike_policy(cfg.STRIKE_THRESHOLDS)
+STRIKE_RULES = _parse_strike_policy(STRIKE_THRESHOLDS)
 
+# ---------- Cog ----------
 class ModerationCog(commands.Cog, name="Moderation"):
     """
     Core moderation + automod + logs + warnings + strike policy.
@@ -73,7 +103,8 @@ class ModerationCog(commands.Cog, name="Moderation"):
         self.cfg: Dict[str, Any] = _load_json(MOD_CFG_PATH, DEFAULT_AUTOMOD_CFG.copy())
         self.warns: Dict[str, Dict[str, Any]] = _load_json(WARNS_PATH, {})   # guild_id -> { user_id: [ {ts, reason}, ... ] }
         self.strikes: Dict[str, Dict[str, int]] = _load_json(STRIKES_PATH, {})  # guild_id -> { user_id: int }
-        self._spam_buckets: Dict[int, list[float]] = {}  # user_id -> timestamps
+        self._spam_buckets: Dict[int, List[float]] = {}  # user_id -> timestamps
+
         # compile regex list
         self._regexes = []
         for pat in self.cfg.get("regex_list", []):
@@ -141,12 +172,11 @@ class ModerationCog(commands.Cog, name="Moderation"):
         actor = f"AutoMod (strikes={strikes_now})"
 
         if action == "warn":
-            # already warned (strike came from warn), nothing extra
             return "warn"
 
         if action == "timeout":
             try:
-                until = discord.utils.utcnow() + discord.timedelta(minutes=mins or 5)
+                until = discord.utils.utcnow() + timedelta(minutes=mins or 5)
                 await member.timeout(until, reason=f"{actor}: {reason}")
                 await self._log(guild, "Strike policy: timeout",
                                 f"User: {member.mention}\nMinutes: {mins}\nReason: {_safe_str(reason)}")
@@ -220,7 +250,7 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
         # 3) Excessive mentions
         max_mentions = int(self.cfg.get("max_mentions", 5))
-        if len(message.mentions) > max_mentions:
+        if max_mentions > 0 and len(message.mentions) > max_mentions:
             strikes = self._add_warning(message.guild.id, message.author.id, f"Excessive mentions: {len(message.mentions)}")
             await self._log(message.guild, "AutoMod: Excessive mentions",
                             f"Author: {message.author.mention}\nMentions: {len(message.mentions)}\n"
@@ -370,7 +400,7 @@ class ModerationCog(commands.Cog, name="Moderation"):
     @commands.has_permissions(moderate_members=True)
     async def mute(self, ctx: commands.Context, member: discord.Member, minutes: commands.Range[int, 1, 10080], *, reason: Optional[str] = None):
         try:
-            until = discord.utils.utcnow() + discord.timedelta(minutes=minutes)
+            until = discord.utils.utcnow() + timedelta(minutes=minutes)
             await member.timeout(until, reason=reason or "Muted by moderator")
             await self._log(ctx.guild, "Mute", f"User: {member.mention}\nBy: {ctx.author.mention}\nMinutes: {minutes}\nReason: {_safe_str(reason)}")
             await ctx.reply(f"🔇 Muted {member.mention} for {minutes} minute(s).", mention_author=False)

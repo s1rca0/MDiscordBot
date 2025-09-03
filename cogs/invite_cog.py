@@ -1,117 +1,107 @@
-# cogs/invite_cog.py
+# Server invite utilities (module-scope context menu; hobby-safe)
 from __future__ import annotations
 
-import os
-import re
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
-INVITE_ENV = "SERVER_INVITE_URL"
-INVITE_REGEX = re.compile(
-    r"^https://(?:discord\.gg|discord(?:app)?\.com/invite)/[A-Za-z0-9\-]+/?$"
-)
+from config import cfg  # reads env at import
 
-def get_invite_url() -> str | None:
-    url = os.getenv(INVITE_ENV, "").strip()
-    return url if INVITE_REGEX.match(url) else None
 
-def can_manage_guild(inter: discord.Interaction) -> bool:
-    perms = inter.user.guild_permissions if isinstance(inter.user, discord.Member) else None
-    return bool(perms and (perms.administrator or perms.manage_guild))
+def _invite_url() -> str | None:
+    url = (getattr(cfg, "SERVER_INVITE_URL", "") or "").strip()
+    return url or None
 
-class InviteCog(commands.Cog):
-    """Secure invite delivery (DM by default) to avoid AutoMod deletions."""
+
+def _invite_embed(guild: discord.Guild, url: str) -> discord.Embed:
+    e = discord.Embed(
+        title=f"Gateway to {guild.name}",
+        description=f"Use this link to enter:\n{url}",
+        color=discord.Color.green(),
+    )
+    e.set_footer(text="Share wisely.")
+    return e
+
+
+class InviteCog(commands.Cog, name="Invite"):
+    """Slash helpers to share/check the invite."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ---- slash: /invite ----------------------------------------------------
-    @app_commands.command(
-        name="invite",
-        description="Receive a secure invite link (sent via DM).",
-    )
-    @app_commands.describe(
-        show_here="Post the link here (ephemeral) instead of DM. Useful if your DMs are closed."
-    )
-    @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.user.id, i.guild_id))
-    async def invite(self, interaction: discord.Interaction, show_here: bool = False):
-        invite = get_invite_url()
-        if not invite:
-            msg = (
-                f"⚠️ No valid `{INVITE_ENV}` found. "
-                "An admin must set a proper Discord invite URL in environment variables."
-            )
-            if can_manage_guild(interaction):
-                return await interaction.response.send_message(msg, ephemeral=True)
-            # regular users get a soft message
-            return await interaction.response.send_message(
-                "I can't find an invite right now. Please ping an admin.", ephemeral=True
-            )
-
-        # try DM first unless user asked for 'here'
-        if not show_here:
-            try:
-                await interaction.user.send(f"🔑 **Your secure invite**\n{invite}")
-                return await interaction.response.send_message(
-                    "I’ve sent you a DM with the invite. Check your inbox.", ephemeral=True
-                )
-            except discord.Forbidden:
-                # fall through to ephemeral-in-channel
-                show_here = True
-
-        # ephemeral in-channel (not visible to others; avoids AutoMod since it's not public)
-        await interaction.response.send_message(
-            f"🔑 **Your secure invite**\n{invite}",
-            ephemeral=True,
-        )
-
-    # ---- slash: /invite_preview (admins) -----------------------------------
-    @app_commands.command(
-        name="invite_preview",
-        description="Preview the configured invite (admins).",
-    )
-    async def invite_preview(self, interaction: discord.Interaction):
-        if not can_manage_guild(interaction):
-            return await interaction.response.send_message(
-                "You need *Manage Server* (or Admin) to use this.", ephemeral=True
-            )
-
-        invite = get_invite_url()
-        if not invite:
-            return await interaction.response.send_message(
-                f"⚠️ `{INVITE_ENV}` is missing or invalid. Set a Discord invite URL.",
+    @app_commands.command(name="invite", description="Show the server invite (ephemeral)")
+    async def invite(self, interaction: discord.Interaction):
+        url = _invite_url()
+        if not url:
+            await interaction.response.send_message(
+                "No invite configured yet. Set it in `/setup` (Server Invite).",
                 ephemeral=True,
             )
+            return
+        await interaction.response.send_message(embed=_invite_embed(interaction.guild, url), ephemeral=True)
 
-        await interaction.response.send_message(
-            f"Configured invite:\n{invite}", ephemeral=True
-        )
-
-    # ---- user context menu: “DM Invite” ------------------------------------
-    @app_commands.context_menu(name="DM Invite")
-    async def dm_invite_context(self, interaction: discord.Interaction, member: discord.Member):
-        """Right-click a user → Apps → DM Invite (admins only)."""
-        if not can_manage_guild(interaction):
-            return await interaction.response.send_message(
-                "You need *Manage Server* (or Admin) to use this.", ephemeral=True
+    @app_commands.command(name="invite_dm", description="(Admin) DM the server invite to a member")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(member="Who should receive the invite?")
+    async def invite_dm(self, interaction: discord.Interaction, member: discord.Member):
+        url = _invite_url()
+        if not url:
+            await interaction.response.send_message(
+                "No invite configured yet. Set it in `/setup` (Server Invite).",
+                ephemeral=True,
             )
-
-        invite = get_invite_url()
-        if not invite:
-            return await interaction.response.send_message(
-                f"⚠️ `{INVITE_ENV}` is missing or invalid.", ephemeral=True
-            )
-
+            return
         try:
-            await member.send(f"🔑 **Invite from {interaction.guild.name}**\n{invite}")
-            await interaction.response.send_message(
-                f"Sent the invite to **{member.display_name}** via DM.", ephemeral=True
-            )
+            await member.send(embed=_invite_embed(interaction.guild, url))
+            await interaction.response.send_message(f"✅ Invite DM’d to {member.mention}.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "Couldn’t DM that user (DMs closed).", ephemeral=True
-            )
+            await interaction.response.send_message("I can’t DM them (privacy settings).", ephemeral=True)
+
+    @app_commands.command(name="invite_status", description="Check whether an invite is configured")
+    async def invite_status(self, interaction: discord.Interaction):
+        url = _invite_url()
+        msg = f"Configured ✅\n{url}" if url else "Not configured ❌ — set it in `/setup`."
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+# --------- User context menu (module-scope) ----------
+async def _ctx_send_invite(interaction: discord.Interaction, user: discord.User):
+    # Mods/owner only
+    ok = False
+    if isinstance(interaction.user, discord.Member):
+        ok = interaction.user.guild_permissions.manage_guild
+    if not ok:
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message("Run this inside a server.", ephemeral=True)
+        return
+
+    url = _invite_url()
+    if not url:
+        await interaction.response.send_message(
+            "No invite configured yet. Set it in `/setup` (Server Invite).",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        await user.send(embed=_invite_embed(interaction.guild, url))
+        await interaction.response.send_message(f"✅ Invite DM’d to {user.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("I can’t DM them (privacy settings).", ephemeral=True)
+
+
+SEND_INVITE_MENU = app_commands.ContextMenu(
+    name="DM: Server Invite",
+    callback=_ctx_send_invite  # (interaction, user)
+)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(InviteCog(bot))
+    try:
+        bot.tree.add_command(SEND_INVITE_MENU)
+    except Exception:
+        pass

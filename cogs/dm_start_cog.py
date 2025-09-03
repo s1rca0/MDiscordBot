@@ -1,159 +1,77 @@
-# DM onboarding utilities: /start to open a DM, /helpdm for a DM-optimized help panel.
+# DM-on-demand utilities (module-scope context menu; hobby-safe)
 from __future__ import annotations
-import logging
+
 import discord
-from discord.ext import commands
 from discord import app_commands
-
-from config import cfg
-
-log = logging.getLogger(__name__)
+from discord.ext import commands
 
 
-def _welcome_embed(user: discord.abc.User) -> discord.Embed:
+def _start_embed(guild: discord.Guild, member: discord.abc.User | discord.Member) -> discord.Embed:
     e = discord.Embed(
-        title="👋 Welcome!",
+        title="M.O.R.P.H.E.U.S. — DM Link",
         description=(
-            "I'm **M.O.R.P.H.E.U.S.** — ready to chat with you directly here.\n\n"
-            "Try:\n"
-            "• `/ask` — ask me anything\n"
-            "• `/helpdm` — a quick DM help panel\n\n"
-            "Tip: You don’t have to join a server to use me in DMs. "
-            "You can always find me in your **Apps** list on the left."
+            "I’m awake here. You can use my commands directly in DM for privacy.\n\n"
+            "Try **/start** or **/helpdm** (if enabled) to see options. "
+            "If you want to return to HQ, use **/invite** at any time."
         ),
         color=discord.Color.blurple(),
     )
-    e.set_footer(text="Safe & compliant: I only DM you after you click.")
-    if user.display_avatar:
-        e.set_thumbnail(url=user.display_avatar.url)
+    e.set_footer(text=f"{guild.name}")
     return e
 
 
-def _helpdm_embed(user: discord.abc.User) -> discord.Embed:
-    lines = [
-        "**Core**",
-        "• `/ask <prompt>` — ask me anything",
-        "• `/start` — (in a server) open a DM with me",
-        "• `/helpdm` — this help panel",
-    ]
-
-    # If you’ve set a public invite, show it as an optional next step.
-    if cfg.SERVER_INVITE_URL:
-        lines += [
-            "",
-            "**Join the server (optional, recommended):**",
-            f"{cfg.SERVER_INVITE_URL}",
-        ]
-
-    # If you use YT features, hint at them without assuming they’re enabled.
-    if cfg.YT_ANNOUNCE_CHANNEL_ID:
-        lines += [
-            "",
-            "_Heads up: in the server, I can post new YouTube drops automatically._",
-        ]
-
-    desc = "\n".join(lines)
-
-    e = discord.Embed(
-        title="📖 Quick Help (DM)",
-        description=desc,
-        color=discord.Color.blurple(),
-    )
-    e.set_footer(text="You can always find me in your Apps list.")
-    if user.display_avatar:
-        e.set_thumbnail(url=user.display_avatar.url)
-    return e
-
-
-class DMStartCog(commands.Cog):
-    """Add /start to open a DM and /helpdm for a DM-optimized help panel."""
+class DMStartCog(commands.Cog, name="DM / Start"):
+    """Slash helper for mods/owner to trigger the DM."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # /start — best place to kick off a DM greeting
-    @app_commands.command(name="start", description="Open a DM with Morpheus and get a quick intro.")
-    @app_commands.checks.cooldown(1, 10.0)  # 1 use per 10s per user
-    async def start(self, interaction: discord.Interaction):
-        user = interaction.user
-
-        # If already in DMs, greet right here.
+    @app_commands.command(name="dm_start", description="(Admin) DM Morpheus’ start message to a member")
+    @app_commands.describe(member="Who should receive the DM?")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def dm_start(self, interaction: discord.Interaction, member: discord.Member):
         if interaction.guild is None:
-            try:
-                await interaction.response.send_message(embed=_welcome_embed(user), ephemeral=False)
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "I couldn’t send here. Please re-open the DM and try `/start` again.",
-                    ephemeral=True,
-                )
-            return
-
-        # In a server → show a button that opens DM and sends greeting
-        class StartDMView(discord.ui.View):
-            def __init__(self):
-                super().__init__(timeout=120)
-
-            @discord.ui.button(label="Open DM & Greet", style=discord.ButtonStyle.primary)
-            async def open_dm(self, btn: discord.ui.Button, inter: discord.Interaction):
-                try:
-                    dm = await inter.user.create_dm()
-                    await dm.send(embed=_welcome_embed(inter.user))
-                    await inter.response.edit_message(
-                        content="✅ I’ve sent you a DM. Check your inbox (left sidebar → Apps → M.O.R.P.H.E.U.S.).",
-                        view=None,
-                    )
-                except discord.Forbidden:
-                    help_text = (
-                        "❌ I couldn’t DM you.\n\n"
-                        "**How to enable DMs:**\n"
-                        "1) User Settings → Privacy & Safety → allow DMs from server members (or add me via User Install),\n"
-                        "2) Then run `/start` again, or click me in **Apps** to chat."
-                    )
-                    if inter.response.is_done():
-                        await inter.edit_original_response(content=help_text, view=None)
-                    else:
-                        await inter.response.edit_message(content=help_text, view=None)
-
-            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-            async def cancel(self, btn: discord.ui.Button, inter: discord.Interaction):
-                await inter.response.edit_message(content="Canceled.", view=None)
-
-        await interaction.response.send_message(
-            content="I can DM you a quick intro. Ready?",
-            view=StartDMView(),
-            ephemeral=True,
-        )
-
-    # /helpdm — DM-optimized help (kept separate to avoid clashing with any existing /help)
-    @app_commands.command(name="helpdm", description="Show a quick DM help panel for Morpheus.")
-    @app_commands.checks.cooldown(1, 5.0)
-    async def helpdm(self, interaction: discord.Interaction):
-        # Works in DMs or servers (ephemeral in servers).
-        embed = _helpdm_embed(interaction.user)
-        if interaction.guild is None:
-            await interaction.response.send_message(embed=embed, ephemeral=False)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # Optional context menu: “Message me” (right-click the bot user)
-    @app_commands.context_menu(name="Message me")
-    async def message_me(self, interaction: discord.Interaction, user: discord.User):
-        if user.id != self.bot.user.id:  # only meaningful when target is the bot
-            await interaction.response.send_message("Pick **M.O.R.P.H.E.U.S.** to DM.", ephemeral=True)
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
         try:
-            dm = await interaction.user.create_dm()
-            await dm.send(embed=_welcome_embed(interaction.user))
-            await interaction.response.send_message(
-                "✅ DM sent. Check your inbox (left sidebar → Apps).",
-                ephemeral=True,
-            )
+            await member.send(embed=_start_embed(interaction.guild, member))
+            await interaction.response.send_message(f"✅ Sent DM to {member.mention}.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ I couldn’t DM you. Enable DMs from this server, then try again.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("I can’t DM them (privacy settings).", ephemeral=True)
+
+
+# --------- User context menu (module-scope) ----------
+# IMPORTANT: define OUTSIDE the class
+async def _ctx_dm_start(interaction: discord.Interaction, user: discord.User):
+    # Only allow mods/owner to trigger this
+    ok = False
+    if isinstance(interaction.user, discord.Member):
+        ok = interaction.user.guild_permissions.manage_guild
+    if not ok:
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message("Run this inside a server.", ephemeral=True)
+        return
+
+    try:
+        await user.send(embed=_start_embed(interaction.guild, user))
+        await interaction.response.send_message(f"✅ Sent DM to {user.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("I can’t DM them (privacy settings).", ephemeral=True)
+
+
+DM_START_MENU = app_commands.ContextMenu(
+    name="DM: Start with Morpheus",
+    callback=_ctx_dm_start  # (interaction, user)
+)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DMStartCog(bot))
+    try:
+        bot.tree.add_command(DM_START_MENU)
+    except Exception:
+        # If it already exists (hot-reload), ignore
+        pass

@@ -1,5 +1,5 @@
-# cogs/meme_feed_cog.py
 from __future__ import annotations
+from discord import app_commands
 import os
 import json
 import time
@@ -10,7 +10,7 @@ import discord
 from discord.ext import commands, tasks
 import requests
 
-from config import cfg  # uses your module-level cfg
+from config import cfg  # uses module-level cfg
 
 # Ephemeral history file (safe on Railway Hobby; lost on redeploys, which is fine)
 HIST_PATH = "data/meme_history.json"
