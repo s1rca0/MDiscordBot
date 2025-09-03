@@ -1,159 +1,134 @@
 # bot.py
 from __future__ import annotations
-import asyncio
+import os
 import logging
-from typing import Iterable, List
+import asyncio
+from typing import List, Tuple
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
-from config import cfg
-
 log = logging.getLogger("morpheus.bot")
-logging.basicConfig(level=getattr(logging, (cfg.LOG_LEVEL or "INFO").upper()))
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
-# ---- Hard requirements (always load) ----
-CORE_COGS: List[str] = [
+# ---- Intents ----
+def _make_intents() -> discord.Intents:
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.members = True
+    intents.guilds = True
+    intents.presences = False
+    return intents
+
+# ---- Cog lists (load core first, then optional until near the 100 command cap) ----
+COGS_CORE: List[str] = [
+    # absolutely essential / already agreed to keep
+    "cogs.setup_cog",
+    "cogs.help_cog",
     "cogs.about_cog",
     "cogs.ai_mode_cog",
-    "cogs.backup_clone_cog",
-    "cogs.botnick_cog",
     "cogs.chat_cog",
     "cogs.chat_listener_cog",
-    "cogs.dev_portal_tools_cog",
-    "cogs.digest_cog",
-    "cogs.disaster_recovery_cog",
     "cogs.dm_start_cog",
-    "cogs.ethics_cog",
-    "cogs.faq_cog",
-    "cogs.hackin_cog",
-    "cogs.health_cog",
-    "cogs.help_cog",
     "cogs.invite_cog",
-    "cogs.layer_cog",
-    "cogs.meme_feed_cog",
-    "cogs.memory_bridge_cog",
-    "cogs.mission_cog",
-    "cogs.mod_recommender_cog",
-    "cogs.moderation_cog",
-    "cogs.onboarding_fasttrack_cog",
-    "cogs.pin_reaction_cog",
-    "cogs.presence_cog",
-    "cogs.promotion_cog",
-    "cogs.roles_cog",
     "cogs.rules_cog",
-    "cogs.setup_cog",
+    "cogs.moderation_cog",
+    "cogs.roles_cog",
     "cogs.tickets_cog",
-    "cogs.user_app_cog",
+    "cogs.onboarding_fasttrack_cog",
     "cogs.welcome_construct_cog",
+    "cogs.presence_cog",
+    "cogs.meme_feed_cog",
 ]
 
-# ---- Optional cogs (loaded until we approach Discord’s 100 global command limit) ----
-OPTIONAL_COGS: List[str] = [
+# Load these only if command budget allows
+COGS_OPTIONAL: List[str] = [
+    "cogs.user_app_cog",
+    "cogs.faq_cog",
+    "cogs.digest_cog",
+    "cogs.memory_bridge_cog",
+    "cogs.layer_cog",
+    "cogs.mission_cog",
+    "cogs.mod_recommender_cog",
+    "cogs.pin_reaction_cog",
     "cogs.void_pulse_cog",
-    "cogs.wellbeing_cog",
     "cogs.youtube_cog",
     "cogs.youtube_overview_cog",
     "cogs.yt_announcer_cog",
-    # "cogs.persona",  # intentionally excluded
+    "cogs.backup_clone_cog",
+    "cogs.disaster_recovery_cog",
+    "cogs.dev_portal_tools_cog",
+    "cogs.health_cog",
+    "cogs.ethics_cog",
+    "cogs.hackin_cog",
+    "cogs.void_pulse_cog",  # safe duplicate guard will ignore if already loaded
+    "cogs.wellbeing_cog",
 ]
 
+COMMAND_CAP = 100
+# Keep a little headroom to avoid flapping on sync
+COMMAND_SOFT_LIMIT = int(os.getenv("COMMAND_SOFT_LIMIT", "98") or 98)
 
 class DiscordBot(commands.Bot):
-    """
-    Exported for main.py. Keeps us within the global slash command cap and logs
-    any cogs it must skip.
-    """
-
     def __init__(self) -> None:
-        intents = discord.Intents.default()
-        intents.members = True
-        intents.message_content = True  # needed for chat channel listener, purge, etc.
-        super().__init__(command_prefix=cfg.COMMAND_PREFIX or "$", intents=intents)
-
-        self._failed_cogs: List[str] = []
-        self._skipped_cogs: List[str] = []
+        super().__init__(
+            command_prefix=commands.when_mentioned_or("!"),
+            intents=_make_intents(),
+            application_id=int(os.getenv("DISCORD_APP_ID", "0") or 0) or None,
+        )
+        self._loaded: List[str] = []
+        self._skipped: List[Tuple[str, str]] = []  # (cog, reason)
 
     async def setup_hook(self) -> None:
-        # Load core cogs (must-have). We log but do not crash on individual failures.
-        await self._load_cogs(CORE_COGS, label="core")
+        # Load cogs in order
+        await self._load_cogs(COGS_CORE, label="core")
+        await self._load_cogs(COGS_OPTIONAL, label="optional")
 
-        # Try optionals conservatively (stop when we near/exceed the command cap).
-        await self._load_optionals_with_cap()
-
-        # Final sync
+        # Sync once after loading
         try:
-            cmds = await self.tree.sync()
-            log.info("Synced %d commands: %s", len(cmds), [c.name for c in cmds])
+            synced = await self.tree.sync()
+            log.info("Synced %d commands: %s", len(synced), [c.name for c in synced])
         except Exception as e:
-            log.warning("Slash command sync failed: %s", e)
+            log.exception("Command sync failed: %s", e)
 
-        log.info("✅ Logged in as %s (%s)", self.user, self.user.id if self.user else "?")
-        if self._failed_cogs or self._skipped_cogs:
-            log.info(
-                "Skipped/failed cogs: %s",
-                ", ".join(self._skipped_cogs + self._failed_cogs) or "(none)",
-            )
+        # Nice log summary
+        log.info("Loaded cogs: %s", ", ".join(self._loaded) if self._loaded else "(none)")
+        if self._skipped:
+            msg = ", ".join([f"{c} ({r})" for c, r in self._skipped])
+            log.info("Skipped/failed cogs: %s", msg)
 
-    async def _load_cogs(self, cogs: Iterable[str], *, label: str) -> None:
-        for ext in cogs:
+    async def _load_cogs(self, names: List[str], *, label: str) -> None:
+        for ext in names:
+            if ext in self._loaded:
+                continue
+            # Before loading more, check a soft command limit
+            try:
+                current_count = len(self.tree.get_commands())
+            except Exception:
+                current_count = 0
+            if current_count >= COMMAND_SOFT_LIMIT:
+                self._skipped.append((ext, f"command budget {current_count}/{COMMAND_CAP}"))
+                continue
+
             try:
                 await self.load_extension(ext)
-            except app_commands.CommandLimitReached as e:
-                # If core ever hits the cap, we still continue; you’ll see the log.
-                self._skipped_cogs.append(f"{ext} (CommandLimitReached)")
-                log.warning("Failed to load %s: %s: %s", ext, e.__class__.__name__, e)
-            except commands.errors.ExtensionFailed as e:
-                self._failed_cogs.append(f"{ext} ({e.__class__.__name__}: {e.original})")
-                log.warning("Failed to load %s: %s: %s", ext, e.__class__.__name__, e)
+                self._loaded.append(ext)
+            except discord.app_commands.CommandLimitReached:
+                self._skipped.append((ext, "CommandLimitReached (>=100)"))
+            except commands.errors.ExtensionAlreadyLoaded:
+                # harmless
+                if ext not in self._loaded:
+                    self._loaded.append(ext)
             except Exception as e:
-                self._failed_cogs.append(f"{ext} ({e.__class__.__name__})")
-                log.warning("Failed to load %s: %s: %s", ext, e.__class__.__name__, e)
-
-        loaded = [e for e in cogs if e not in (self._failed_cogs + self._skipped_cogs)]
-        log.info("Loaded %s cogs: %s", label, ", ".join(loaded) or "(none)")
-
-    async def _load_optionals_with_cap(self) -> None:
-        """
-        Load optional cogs until we approach the 100 global command limit.
-        If adding a cog triggers CommandLimitReached, skip it and continue.
-        """
-        for ext in OPTIONAL_COGS:
-            try:
-                await self.load_extension(ext)
-                # Probe a lightweight sync to see if we crossed the cap
-                try:
-                    await self.tree.sync()
-                except app_commands.CommandLimitReached:
-                    # Roll back this cog; mark as skipped
-                    await self.unload_extension(ext)
-                    self._skipped_cogs.append(f"{ext} (CommandLimitReached)")
-                    log.warning("Skipping %s: global command cap reached.", ext)
-                except Exception:
-                    # Non-cap errors on sync are logged but keep the cog
-                    log.debug("Post-load sync hiccup for %s (ignored).", ext)
-            except app_commands.CommandLimitReached:
-                self._skipped_cogs.append(f"{ext} (CommandLimitReached)")
-                log.warning("Skipping %s: global command cap reached at load time.", ext)
-            except commands.errors.ExtensionFailed as e:
-                self._failed_cogs.append(f"{ext} ({e.__class__.__name__}: {e.original})")
-                log.warning("Failed to load %s: %s: %s", ext, e.__class__.__name__, e)
-            except Exception as e:
-                self._failed_cogs.append(f"{ext} ({e.__class__.__name__})")
-                log.warning("Failed to load %s: %s: %s", ext, e.__class__.__name__, e)
+                self._skipped.append((ext, f"{e.__class__.__name__}: {e}"))
 
     async def on_ready(self):
-        # Friendly one-liners so Railway logs are readable
-        log.info("Loaded cogs: %s", ", ".join(sorted(self.extensions.keys())))
-        skipped = ", ".join(self._skipped_cogs) or "(none)"
-        failed = ", ".join(self._failed_cogs) or "(none)"
-        log.info("Skipped/failed cogs: %s | %s", skipped, failed)
+        log.info("✅ Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
 
-
-# Note:
-# - PyNaCl warning is harmless unless you need voice.
-# - main.py is expected to do:
-#       from bot import DiscordBot
-#       bot = DiscordBot()
-#       bot.run(cfg.BOT_TOKEN)
+    # ----- entrypoint expected by main.py -----
+    async def start_bot(self):
+        token = os.getenv("DISCORD_TOKEN", "").strip()
+        if not token:
+            raise RuntimeError("DISCORD_TOKEN is missing.")
+        # discord.py handles reconnect internally; keep_alive server runs elsewhere
+        await self.start(token, reconnect=True)
