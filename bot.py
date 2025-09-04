@@ -20,7 +20,7 @@ if not log.handlers:
     )
 
 # -------------------------------------------------
-# Helper: parse env lists
+# Helper: parse env lists & flags
 # -------------------------------------------------
 def _parse_int_list(env_val: str | None) -> List[int]:
     out: List[int] = []
@@ -33,11 +33,28 @@ def _parse_int_list(env_val: str | None) -> List[int]:
             continue
     return out
 
+def _parse_str_set(env_val: str | None) -> set[str]:
+    if not env_val:
+        return set()
+    return {s.strip() for s in env_val.split(",") if s.strip()}
+
 def _truthy(env_val: str | None, default: bool = True) -> bool:
     if env_val is None:
         return default
     return env_val.strip().lower() in ("1", "true", "yes", "y", "on")
 
+# -------------------------------------------------
+# Feature toggles
+# -------------------------------------------------
+# Keep these cogs in the repo but do not load them (avoid duplicates / 100-cap pressure)
+DEFAULT_DISABLED = {
+    "cogs.command_hub_cog",      # legacy command-group wrapper (causes dup roots if mixed)
+    "cogs.youtube_overview_cog", # optional dashboard-y commands
+    "cogs.yt_announcer_cog",     # optional auto-announcer
+}
+# Override with env if you want to re-enable something later:
+#   DISABLED_COGS="cogs.youtube_overview_cog"  (comma-separated)
+DISABLED_COGS = DEFAULT_DISABLED | _parse_str_set(os.getenv("DISABLED_COGS"))
 
 # -------------------------------------------------
 # Discord Bot
@@ -46,7 +63,7 @@ class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
-        intents.members = True                     # for joins / roles / tickets
+        intents.members = True                     # joins / roles / tickets
         intents.message_content = _truthy(os.getenv("MESSAGE_CONTENT_INTENTS", "true"))
         intents.messages = True
         intents.reactions = True
@@ -56,7 +73,6 @@ class DiscordBot(commands.Bot):
             command_prefix=commands.when_mentioned_or("!"),
             intents=intents,
             help_command=None,
-            # If you want much faster dev sync for a single guild, set GUILD_IDS
             tree_cls=discord.app_commands.CommandTree,
         )
 
@@ -72,7 +88,7 @@ class DiscordBot(commands.Bot):
     async def setup_hook(self) -> None:
         """
         Runs before the bot connects to the gateway.
-        Load cogs, collapse commands, and do an initial app-command sync.
+        Load cogs, try to keep under 100-command cap, and sync.
         """
         # 1) Load core/required cogs first (feature logic lives there)
         required_cogs = [
@@ -111,19 +127,14 @@ class DiscordBot(commands.Bot):
             "cogs.hackin_cog",
             # "cogs.persona",   # intentionally excluded
         ]
-
         await self._load_cogs(required_cogs, label="required")
 
-        # 2) Load the Command Hub wrapper (creates grouped roots)
-        await self._load_extension_safe("cogs.command_hub_cog")
+        # 2) (Intentionally NOT loading cogs.command_hub_cog; disabled by config)
 
-        # 3) Remove legacy root commands that are now covered by groups
-        self._remove_legacy_roots()
-
-        # 4) Try to sync (guild-targeted for dev if provided, else global)
+        # 3) Initial sync
         await self._sync_commands_initial()
 
-        # 5) Load optional cogs *after* collapsing to keep under 100-cap
+        # 4) Try to load optionals, but keep under the cap
         optional_cogs = [
             "cogs.youtube_overview_cog",
             "cogs.yt_announcer_cog",
@@ -131,7 +142,7 @@ class DiscordBot(commands.Bot):
         ]
         await self._load_optionals_with_cap(optional_cogs, cap=100)
 
-        # 6) Final sync after optional attempts
+        # 5) Final sync after optional attempts
         await self._sync_commands_initial()
 
         # Log summary
@@ -165,6 +176,12 @@ class DiscordBot(commands.Bot):
             await self._load_extension_safe(ext)
 
     async def _load_extension_safe(self, ext: str) -> None:
+        # Respect disabled list without deleting files
+        if ext in DISABLED_COGS:
+            self.skipped_cogs.append((ext, "DisabledByConfig"))
+            log.info("Skipped (disabled): %s", ext)
+            return
+
         try:
             await self.load_extension(ext)
             self.loaded_cogs.append(ext)
@@ -179,8 +196,11 @@ class DiscordBot(commands.Bot):
         the global command count over the cap.
         """
         for ext in optional_names:
-            # Skip if it already failed earlier (e.g., import error)
-            if any(ext == name for (name, _reason) in self.skipped_cogs):
+            # Skip if it already failed earlier (e.g., import error) or disabled
+            if ext in DISABLED_COGS or any(ext == name for (name, _reason) in self.skipped_cogs):
+                if ext in DISABLED_COGS:
+                    self.skipped_cogs.append((ext, "DisabledByConfig"))
+                    log.info("Skipped (disabled): %s", ext)
                 continue
 
             before = len(self.tree.get_commands())
@@ -193,52 +213,12 @@ class DiscordBot(commands.Bot):
                     await self.unload_extension(ext)
                 except Exception:
                     pass
-                # Remove from loaded list if we added it
                 if ext in self.loaded_cogs:
                     self.loaded_cogs.remove(ext)
                 self.skipped_cogs.append((ext, f"CommandLimitReached: {after} > cap {cap}"))
                 log.warning("Unloaded %s due to command cap (%d > %d)", ext, after, cap)
             else:
                 log.info("Optional %s kept (commands: %d)", ext, after)
-
-    # ------------- Command collapse -------------
-
-    def _remove_legacy_roots(self) -> None:
-        """
-        Remove individual root commands that are now exposed via the Command Hub groups.
-        """
-        def _rm(name: str):
-            try:
-                self.tree.remove_command(name, type=discord.AppCommandType.chat_input)
-                log.info("Collapsed: removed legacy /%s", name)
-            except Exception:
-                pass
-
-        # MEMES (from MemeFeedCog)
-        for n in ("memes_config", "memes_start", "memes_stop", "memes_now"):
-            _rm(n)
-
-        # VOID PULSE (from Void Pulse cog)
-        for n in ("voidpulse_status", "voidpulse_set_channel", "voidpulse_toggle", "voidpulse_nudge"):
-            _rm(n)
-
-        # CHAT (from Chat Control cog)
-        for n in ("chat_status", "chat_on", "chat_off", "chat_set_channel", "chat_channel_clear"):
-            _rm(n)
-
-        # PRESENCE (from Presence cog)
-        for n in ("presence_on", "presence_off", "presence_mode", "presence_add", "presence_show"):
-            _rm(n)
-
-        # DIGEST (from Digest cog)
-        for n in ("digest_on", "digest_off", "digest_channels_add", "digest_channels_list", "export_digest"):
-            _rm(n)
-
-        # YOUTUBE (from YouTube cog)
-        for n in ("yt_force_check", "yt_overview", "yt_watch", "yt_post_latest"):
-            _rm(n)
-
-        # If you later wrap more families (backup, dr, faq, memory…), add their old roots here.
 
     # ------------- Sync helpers -------------
 
@@ -251,9 +231,11 @@ class DiscordBot(commands.Bot):
                 for gid in self.dev_guild_ids:
                     guild = discord.Object(id=gid)
                     await self.tree.sync(guild=guild)
-                log.info("Synced commands (dev guilds: %s). Count=%d",
-                         ",".join(map(str, self.dev_guild_ids)),
-                         len(self.tree.get_commands()))
+                log.info(
+                    "Synced commands (dev guilds: %s). Count=%d",
+                    ",".join(map(str, self.dev_guild_ids)),
+                    len(self.tree.get_commands()),
+                )
             else:
                 await self.tree.sync()
                 log.info("Synced commands (global). Count=%d", len(self.tree.get_commands()))
@@ -282,7 +264,6 @@ class DiscordBot(commands.Bot):
         embed.add_field(name="Commands", value=str(cmd_count))
         embed.add_field(name="Cogs loaded", value=str(loaded))
         if skipped:
-            # Show just a few; keep it compact
             first = "\n".join(f"• {name} — {reason[:90]}" for name, reason in self.skipped_cogs[:5])
             more = f"\n…(+{skipped-5} more)" if skipped > 5 else ""
             embed.add_field(name="Skipped", value=first + more, inline=False)
@@ -320,7 +301,6 @@ class DiscordBot(commands.Bot):
             log.info("Skipped/failed cogs: %s", s)
         else:
             log.info("Skipped/failed cogs: (none)")
-
 
 # -------------------------------------------------
 # Module entry (rarely used if main.py constructs the bot)
