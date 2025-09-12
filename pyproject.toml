@@ -2,7 +2,7 @@
 name = "repl-nix-workspace"
 version = "0.1.0"
 description = "Discord AI bot (Replit + HF dev, OpenAI-ready)"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
 
 dependencies = [
