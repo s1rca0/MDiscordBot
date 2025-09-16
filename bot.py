@@ -5,6 +5,8 @@ from discord.ext import commands
 from config import DISCORD_TOKEN, __version__, DRY_RUN
 from config_store import is_locked
 from utils.auth import is_owner
+from discord import Object as DiscordObject
+from config import DEV_GUILD_IDS
 
 intents = discord.Intents.default()
 intents.members = True
@@ -14,8 +16,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f"[READY] {bot.user} v{__version__} | Slash commands synced.")
+    if DEV_GUILD_IDS:
+        for gid in DEV_GUILD_IDS:
+            # Clear stale per-guild commands and publish instantly
+            bot.tree.clear_commands(guild=DiscordObject(id=gid))
+            await bot.tree.sync(guild=DiscordObject(id=gid))
+        print(f"[READY] {bot.user} v{__version__} | Per-guild commands synced to {sorted(DEV_GUILD_IDS)}.")
+    else:
+        await bot.tree.sync()
+        print(f"[READY] {bot.user} v{__version__} | Global commands synced (may take time to appear).")
 
 @bot.check
 async def global_lock_check(ctx: commands.Context):
@@ -37,6 +46,7 @@ async def setup_hook():
     await bot.add_cog(SetupMVP(bot))
     await bot.add_cog(PurgeMVP(bot))
     await bot.add_cog(DebateMVP(bot))
+    print("[COGS LOADED]", sorted(bot.cogs.keys()))
 
 if __name__ == "__main__":
     print(f"[BOOT] Morpheus v{__version__} DRY_RUN={DRY_RUN}")
