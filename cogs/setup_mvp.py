@@ -16,24 +16,32 @@ class SetupMVP(commands.Cog):
     @app_commands.describe(kind="welcome/memes/void/open_chat", channel="Target text channel")
     @app_commands.choices(kind=[app_commands.Choice(name=k, value=k) for k in CHANNEL_KINDS])
     async def set_channel_cmd(self, interaction: discord.Interaction, kind: app_commands.Choice[str], channel: discord.TextChannel):
-        if not interaction.user.guild_permissions.manage_guild:
+        if not interaction.guild:
+            return await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if not (member and member.guild_permissions.manage_guild):
             return await interaction.response.send_message("Need **Manage Server** permission.", ephemeral=True)
-        set_channel(interaction.guild_id, kind.value, channel.id)
+        set_channel(interaction.guild.id, kind.value, channel.id)
         await interaction.response.send_message(f"Saved `{kind.value}` → <#{channel.id}>", ephemeral=True)
 
     @group.command(name="brand", description="Set this server’s brand nickname.")
     async def brand(self, interaction: discord.Interaction, nickname: str):
-        if not interaction.user.guild_permissions.manage_guild:
+        if not interaction.guild:
+            return await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+        member = interaction.user if isinstance(interaction.user, discord.Member) else None
+        if not (member and member.guild_permissions.manage_guild):
             return await interaction.response.send_message("Need **Manage Server** permission.", ephemeral=True)
-        set_guild_setting(interaction.guild_id, "brand", nickname.strip() or None)
+        set_guild_setting(interaction.guild.id, "brand", (nickname.strip() or None))
         await interaction.response.send_message(f"Brand nickname set to **{nickname}**", ephemeral=True)
 
     @group.command(name="list", description="Show current setup values.")
     async def list_settings(self, interaction: discord.Interaction):
-        lines = []
-        brand = get_guild_setting(interaction.guild_id, "brand", None) or DEFAULT_BRAND_NICK
+        if not interaction.guild:
+            return await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+        lines: list[str] = []
+        brand = get_guild_setting(interaction.guild.id, "brand", None) or DEFAULT_BRAND_NICK
         lines.append(f"**Brand:** {brand}")
         for k in CHANNEL_KINDS:
-            cid = get_channel(interaction.guild_id, k, None)
+            cid = get_channel(interaction.guild.id, k, None)
             lines.append(f"**{k}:** " + (f"<#{cid}>" if cid else "_not set_"))
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
