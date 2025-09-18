@@ -6,7 +6,6 @@ import os
 
 import discord
 from discord import app_commands
-from discord.enums import ChannelType
 from discord.ext import commands
 
 # ---------------------------------------------------------------------------
@@ -89,7 +88,8 @@ class OwnerMVP(commands.Cog):
         """Send a bash-styled log block to #fortress-of-solitude if present."""
         try:
             ch = discord.utils.get(guild.text_channels, name="fortress-of-solitude")
-            if ch and ch.permissions_for(guild.me).send_messages:
+            me = guild.me
+            if ch and me and ch.permissions_for(me).send_messages:
                 stamp = discord.utils.utcnow().replace(microsecond=0).isoformat(sep=" ")
                 lines = ['```bash', f'pi@veritas:~$ echo "{title}"', *payload, f'[log] timestamp: {stamp}', '```']
                 await ch.send("\n".join(lines))
@@ -114,10 +114,34 @@ class OwnerMVP(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Reload failed: `{str(e)[:1800]}`", ephemeral=True)
 
+
     @owner.command(name="status", description="Show Morpheus lock state")
     async def owner_status(self, interaction: discord.Interaction):
         text = "🔒 **LOCKED**" if is_locked() else "🟢 **UNLOCKED**"
         await interaction.response.send_message(text, ephemeral=True)
+
+    @owner.command(name="dump_tree", description="List registered app commands (debug)")
+    async def owner_dump_tree(self, interaction: discord.Interaction):
+        if not await self._owner_only(interaction):
+            return await interaction.response.send_message("Owner only.", ephemeral=True)
+        items: list[str] = []
+        for cmd in self.bot.tree.get_commands():
+            try:
+                # top-level
+                items.append(f"- {cmd.qualified_name} ({cmd.__class__.__name__})")
+                # children if it's a Group
+                children = getattr(cmd, "commands", None)
+                if children:
+                    for sub in children:
+                        items.append(f"    • {sub.qualified_name}")
+            except Exception:
+                continue
+        if not items:
+            items = ["<no commands registered>"]
+        text = "\n".join(items)
+        await interaction.response.send_message(f"```text\n{text}\n```", ephemeral=True)
+        if interaction.guild:
+            await self._bash_log(interaction.guild, "dump_tree", [f"count=\"{len(items)}\""])
 
     @owner.command(name="nuke_resync", description="Force-clear and re-sync application commands for this guild")
     async def owner_nuke_resync(self, interaction: discord.Interaction):
@@ -353,4 +377,15 @@ class OwnerMVP(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(OwnerMVP(bot))
+    cog = OwnerMVP(bot)
+    await bot.add_cog(cog)
+    # Ensure the /owner app command group is added to the tree
+    try:
+        bot.tree.add_command(cog.owner)
+    except Exception:
+        # If it already exists from a prior load, clear and re-add to avoid duplicates
+        try:
+            bot.tree.remove_command("owner")
+        except Exception:
+            pass
+        bot.tree.add_command(cog.owner)
