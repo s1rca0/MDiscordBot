@@ -107,9 +107,9 @@ class OwnerMVP(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             if interaction.guild:
-                await interaction.client.tree.sync(guild=discord.Object(id=interaction.guild.id))
+                await self.bot.tree.sync(guild=discord.Object(id=interaction.guild.id))
             else:
-                await interaction.client.tree.sync()
+                await self.bot.tree.sync()
             await interaction.followup.send("Reload complete (commands re-synced).", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Reload failed: `{str(e)[:1800]}`", ephemeral=True)
@@ -130,10 +130,10 @@ class OwnerMVP(commands.Cog):
         gobj = discord.Object(id=interaction.guild.id)
         try:
             # Clear registered commands for this guild and re-sync fresh
-            interaction.client.tree.clear_commands(guild=gobj)
-            await interaction.client.tree.sync(guild=gobj)
+            self.bot.tree.clear_commands(guild=gobj)
+            await self.bot.tree.sync(guild=gobj)
             # Also sync globals (helps evict stale globals)
-            await interaction.client.tree.sync()
+            await self.bot.tree.sync()
             await interaction.followup.send("Nuked & re-synced commands for this guild.", ephemeral=True)
             await self._bash_log(interaction.guild, "nuke_resync", [f'guild="{interaction.guild.id}"', 'status="ok"'])
         except Exception as e:
@@ -155,7 +155,7 @@ class OwnerMVP(commands.Cog):
         if role is None:
             return await interaction.response.send_message(f"Role **{ARCH_ROLE_NAME}** not found.", ephemeral=True)
 
-        me = interaction.guild.me or await interaction.guild.fetch_member(interaction.client.user.id)
+        me = interaction.guild.me or await interaction.guild.fetch_member(self.bot.user.id)
         if me.top_role.position <= role.position and not me.guild_permissions.administrator:
             return await interaction.response.send_message(
                 f"Move **{role.name}** below Morpheus’ top role, or grant Administrator.", ephemeral=True
