@@ -141,7 +141,6 @@ class OwnerMVP(commands.Cog):
             await self._bash_log(interaction.guild, "nuke_resync", [f'guild="{interaction.guild.id}"', f'error="{str(e)[:120]}"'])
 
     # ------------------ architect mode (toggle hoist; optional grant/revoke) ------------------
-    ARCH_ROLE_NAME = "ARCHITECT"
 
     @owner.command(name="architect_mode", description="Show or hide the ARCHITECT block (toggle hoist).")
     @app_commands.describe(on="true = show as separate group; false = merge into members list")
@@ -151,9 +150,9 @@ class OwnerMVP(commands.Cog):
         if interaction.guild is None:
             return await interaction.response.send_message("Use this in a server.", ephemeral=True)
 
-        role = self._get_role_by_name(interaction.guild, self.ARCH_ROLE_NAME if hasattr(self, 'ARCH_ROLE_NAME') else ARCH_ROLE_NAME)
+        role = self._get_role_by_name(interaction.guild, self.ARCH_ROLE_NAME)
         if role is None:
-            return await interaction.response.send_message(f"Role **{ARCH_ROLE_NAME}** not found.", ephemeral=True)
+            return await interaction.response.send_message(f"Role **{self.ARCH_ROLE_NAME}** not found.", ephemeral=True)
 
         me = interaction.guild.me or await interaction.guild.fetch_member(self.bot.user.id)
         if me.top_role.position <= role.position and not me.guild_permissions.administrator:
@@ -181,9 +180,9 @@ class OwnerMVP(commands.Cog):
         if interaction.guild is None:
             return await interaction.response.send_message("Use this in a server.", ephemeral=True)
 
-        role = self._get_role_by_name(interaction.guild, self.ARCH_ROLE_NAME if hasattr(self, 'ARCH_ROLE_NAME') else ARCH_ROLE_NAME)
+        role = self._get_role_by_name(interaction.guild, self.ARCH_ROLE_NAME)
         if role is None:
-            return await interaction.response.send_message(f"Role **{ARCH_ROLE_NAME}** not found.", ephemeral=True)
+            return await interaction.response.send_message(f"Role **{self.ARCH_ROLE_NAME}** not found.", ephemeral=True)
         try:
             await member.add_roles(role, reason=f"ARCHITECT grant by {interaction.user}")
             await interaction.response.send_message(f"Granted **{role.name}** to {member.mention}.", ephemeral=True)
@@ -199,9 +198,9 @@ class OwnerMVP(commands.Cog):
         if interaction.guild is None:
             return await interaction.response.send_message("Use this in a server.", ephemeral=True)
 
-        role = self._get_role_by_name(interaction.guild, self.ARCH_ROLE_NAME if hasattr(self, 'ARCH_ROLE_NAME') else ARCH_ROLE_NAME)
+        role = self._get_role_by_name(interaction.guild, self.ARCH_ROLE_NAME)
         if role is None:
-            return await interaction.response.send_message(f"Role **{ARCH_ROLE_NAME}** not found.", ephemeral=True)
+            return await interaction.response.send_message(f"Role **{self.ARCH_ROLE_NAME}** not found.", ephemeral=True)
         try:
             if role in member.roles:
                 await member.remove_roles(role, reason=f"ARCHITECT revoke by {interaction.user}")
