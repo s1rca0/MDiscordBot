@@ -55,6 +55,25 @@ def _csv_ids(env_key: str) -> set[int]:
 DEV_GUILD_IDS: set[int] = _csv_ids("DEV_GUILD_IDS")
 OWNER_IDS: set[int]     = _csv_ids("OWNER_IDS")
 
+# Legacy single-owner fallback for older cogs
+_legacy_owner = os.getenv("OWNER_ID", "").strip()
+if not _legacy_owner and OWNER_IDS:
+    # Export first owner as OWNER_ID for legacy cogs that still int(...) this
+    os.environ["OWNER_ID"] = str(next(iter(OWNER_IDS)))
+
+# Optional: allow disabling noisy/legacy cogs via env (CSV of module basenames)
+def _csv_strs(env_key: str) -> set[str]:
+    raw = os.getenv(env_key, "").strip()
+    if not raw:
+        return set()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+DISABLED_COGS: set[str] = _csv_strs("DISABLED_COGS")
+
+# Optional: allowlist of cogs to load (CSV of module basenames). If set, only
+# cogs listed here will be loaded. This *overrides* auto-discovery.
+ACTIVE_COGS: set[str] = _csv_strs("ACTIVE_COGS")
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
@@ -102,12 +121,27 @@ async def _load_all_cogs():
         return loaded
 
     for modinfo in pkgutil.iter_modules([pkg]):
-        name = f"{pkg}.{modinfo.name}"
+        base = modinfo.name
+
+        # If an allowlist is set, skip anything not explicitly listed
+        if ACTIVE_COGS and base not in ACTIVE_COGS:
+            continue
+
+        # Always respect the disable list
+        if base in DISABLED_COGS:
+            log.info("Skipping disabled cog: %s", base)
+            continue
+
+        name = f"{pkg}.{base}"
         try:
             await bot.load_extension(name)
-            loaded.append(modinfo.name)
+            loaded.append(base)
         except Exception as e:
             log.error("Failed to load cog %s: %s", name, e)
+    if ACTIVE_COGS:
+        print(f"[COGS FILTER] ACTIVE_COGS={sorted(ACTIVE_COGS)}  DISABLED_COGS={sorted(DISABLED_COGS) if DISABLED_COGS else []}")
+    elif DISABLED_COGS:
+        print(f"[COGS FILTER] DISABLED_COGS={sorted(DISABLED_COGS)}")
     if loaded:
         print(f"[COGS LOADED] {loaded}")
     return loaded
@@ -122,6 +156,14 @@ async def on_ready():
 
     app_id = bot.application_id
 
+    # Determine which guilds we should operate on:
+    joined_ids = {g.id for g in bot.guilds}
+    if DEV_GUILD_IDS:
+        target_guild_ids = joined_ids & DEV_GUILD_IDS
+    else:
+        target_guild_ids = joined_ids
+    print(f"[SYNC] Target guilds: {sorted(target_guild_ids)} (joined={sorted(joined_ids)})")
+
     try:
         # Pick correct HTTP methods for current discord.py build
         http = bot.http
@@ -130,25 +172,34 @@ async def on_ready():
 
         if callable(put_global) and callable(put_guild):
             # Hard-nuke remote GLOBAL commands
-            await put_global(app_id, [])  # type: ignore[misc]
-            print("[SYNC] Cleared GLOBAL commands (remote)")
+            try:
+                await put_global(app_id, [])  # type: ignore[misc]
+                print("[SYNC] Cleared GLOBAL commands (remote)")
+            except Exception as e:
+                print(f"[SYNC WARN] Could not clear GLOBAL commands: {e}")
 
-            # Hard-nuke remote GUILD commands for each dev guild
-            for gid in DEV_GUILD_IDS:
-                await put_guild(app_id, gid, [])  # type: ignore[misc]
-                print(f"[SYNC] Cleared GUILD commands (remote): {gid}")
+            # Hard-nuke remote GUILD commands for each target guild
+            for gid in target_guild_ids:
+                try:
+                    await put_guild(app_id, gid, [])  # type: ignore[misc]
+                    print(f"[SYNC] Cleared GUILD commands (remote): {gid}")
+                except Exception as e:
+                    print(f"[SYNC WARN] Could not clear guild {gid}: {e}")
         else:
             # Fallback for forks without those methods: clear local trees
             bot.tree.clear_commands(guild=None)
-            for gid in DEV_GUILD_IDS:
+            for gid in target_guild_ids:
                 bot.tree.clear_commands(guild=discord.Object(id=gid))
             print("[SYNC] Fallback: cleared local trees (no HTTP put_* available)")
 
         # Re-publish per-guild commands from our current in-memory tree (fast)
         synced_guilds = []
-        for gid in DEV_GUILD_IDS:
-            await bot.tree.sync(guild=discord.Object(id=gid))
-            synced_guilds.append(gid)
+        for gid in target_guild_ids:
+            try:
+                await bot.tree.sync(guild=discord.Object(id=gid))
+                synced_guilds.append(gid)
+            except Exception as e:
+                print(f"[SYNC WARN] Could not sync guild {gid}: {e}")
         print(f"[READY] {bot.user} | Per-guild commands synced to {synced_guilds}")
 
         # Optional: publish global commands too
