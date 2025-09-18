@@ -154,7 +154,10 @@ class OwnerMVP(commands.Cog):
         if role is None:
             return await interaction.response.send_message(f"Role **{self.ARCH_ROLE_NAME}** not found.", ephemeral=True)
 
-        me = interaction.guild.me or await interaction.guild.fetch_member(self.bot.user.id)
+        bot_user = self.bot.user
+        if bot_user is None:
+            return await interaction.response.send_message("Bot user unavailable.", ephemeral=True)
+        me = interaction.guild.me or await interaction.guild.fetch_member(bot_user.id)
         if me.top_role.position <= role.position and not me.guild_permissions.administrator:
             return await interaction.response.send_message(
                 f"Move **{role.name}** below Morpheus’ top role, or grant Administrator.", ephemeral=True
