@@ -6,7 +6,6 @@ import asyncio
 import traceback
 import logging
 import pkgutil
-import importlib
 
 import discord
 from discord.ext import commands
@@ -15,7 +14,6 @@ from discord.ext import commands
 # .env loading (best-effort)
 # -----------------------------------------------------------------------------
 def _load_env():
-    # Try python-dotenv if available
     try:
         from dotenv import load_dotenv  # type: ignore
         env_loaded = load_dotenv()
@@ -37,12 +35,25 @@ if not TOKEN:
     sys.exit(1)
 
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() in {"1", "true", "yes"}
-DEV_GUILD_IDS = {
-    int(x) for x in os.getenv("DEV_GUILD_IDS", "").replace(" ", "").split(",") if x
-}
-OWNER_IDS = {
-    int(x) for x in os.getenv("OWNER_IDS", "").replace(" ", "").split(",") if x
-}
+
+def _csv_ids(env_key: str) -> set[int]:
+    raw = os.getenv(env_key, "")
+    raw = raw.replace(" ", "")
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for chunk in raw.split(","):
+        if not chunk:
+            continue
+        try:
+            out.add(int(chunk))
+        except ValueError:
+            # Keep going; some legacy cogs may still expect strings elsewhere.
+            print(f"[warn] Skipping non-int value in {env_key}: {chunk!r}")
+    return out
+
+DEV_GUILD_IDS: set[int] = _csv_ids("DEV_GUILD_IDS")
+OWNER_IDS: set[int]     = _csv_ids("OWNER_IDS")
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -58,7 +69,7 @@ log = logging.getLogger("morpheus")
 # Intents / Bot
 # -----------------------------------------------------------------------------
 intents = discord.Intents.default()
-# message_content not required for slash commands; enable if you need legacy prefixes
+# Slash commands do not require message_content; enable only if you need it.
 intents.guilds = True
 intents.members = True
 
@@ -86,9 +97,10 @@ async def on_app_command_error(interaction: discord.Interaction, error: Exceptio
 async def _load_all_cogs():
     loaded = []
     pkg = "cogs"
-    if not os.path.isdir(pkg):
+    if not os.path.isdir(pkg := "cogs"):
         log.warning("No 'cogs/' directory found; skipping cog load.")
         return loaded
+
     for modinfo in pkgutil.iter_modules([pkg]):
         name = f"{pkg}.{modinfo.name}"
         try:
@@ -108,27 +120,38 @@ async def on_ready():
     print(f"[BOOT] Morpheus v0.25.2 DRY_RUN={DRY_RUN}")
     print(f"[READY] {bot.user} connected; nuke_on_boot=True")
 
-    # Application ID should be available post-login
     app_id = bot.application_id
 
     try:
-        # 1) Clear ALL GLOBAL commands remotely
-        await bot.http.bulk_overwrite_global_commands(app_id, [])
-        print("[SYNC] Cleared GLOBAL commands (remote)")
+        # Pick correct HTTP methods for current discord.py build
+        http = bot.http
+        put_global = getattr(http, "put_global_commands", None)
+        put_guild  = getattr(http, "put_guild_commands", None)
 
-        # 2) Clear per-guild commands remotely for each dev guild
-        for gid in DEV_GUILD_IDS:
-            await bot.http.bulk_overwrite_guild_commands(app_id, gid, [])
-            print(f"[SYNC] Cleared GUILD commands (remote): {gid}")
+        if callable(put_global) and callable(put_guild):
+            # Hard-nuke remote GLOBAL commands
+            await put_global(app_id, [])  # type: ignore[misc]
+            print("[SYNC] Cleared GLOBAL commands (remote)")
 
-        # 3) Re-publish per-guild commands from our current in-memory tree (fast)
+            # Hard-nuke remote GUILD commands for each dev guild
+            for gid in DEV_GUILD_IDS:
+                await put_guild(app_id, gid, [])  # type: ignore[misc]
+                print(f"[SYNC] Cleared GUILD commands (remote): {gid}")
+        else:
+            # Fallback for forks without those methods: clear local trees
+            bot.tree.clear_commands(guild=None)
+            for gid in DEV_GUILD_IDS:
+                bot.tree.clear_commands(guild=discord.Object(id=gid))
+            print("[SYNC] Fallback: cleared local trees (no HTTP put_* available)")
+
+        # Re-publish per-guild commands from our current in-memory tree (fast)
         synced_guilds = []
         for gid in DEV_GUILD_IDS:
             await bot.tree.sync(guild=discord.Object(id=gid))
             synced_guilds.append(gid)
         print(f"[READY] {bot.user} | Per-guild commands synced to {synced_guilds}")
 
-        # 4) (Optional) If you want global commands too, uncomment:
+        # Optional: publish global commands too
         # await bot.tree.sync()
     except Exception as e:
         print("[SYNC ERROR]", e)
