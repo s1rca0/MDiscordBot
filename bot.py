@@ -94,6 +94,37 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned_or("!"), intents=intents)
 
+# --- minimal health slash commands (no cogs) ------------------------------
+@bot.tree.command(name="ping", description="Quick health check")
+async def ping(interaction: discord.Interaction):
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send("pong", ephemeral=True)
+    except Exception as e:
+        try:
+            await interaction.followup.send(f"ping error: {e}", ephemeral=True)
+        except Exception:
+            pass
+
+@bot.tree.command(name="whoami", description="Show resolved user + guild for debugging")
+async def whoami(interaction: discord.Interaction):
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        u = interaction.user
+        g = interaction.guild
+        await interaction.followup.send(
+            f"user={getattr(u, 'id', None)} · name={getattr(u, 'display_name', None)}\n"
+            f"guild={getattr(g, 'id', None)} · name={getattr(g, 'name', None)}",
+            ephemeral=True,
+        )
+    except Exception as e:
+        try:
+            await interaction.followup.send(f"whoami error: {e}", ephemeral=True)
+        except Exception:
+            pass
+
 # -----------------------------------------------------------------------------
 # Global slash-command error hook (never swallow exceptions silently)
 # -----------------------------------------------------------------------------
@@ -237,3 +268,66 @@ if __name__ == "__main__":
     except Exception as e:
         print("[FATAL]", e)
         sys.exit(1)
+
+# cogs/owner_mvp.py
+from discord.ext import commands
+import discord
+
+class OwnerMVP(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.group(name="owner", invoke_without_command=True)
+    async def owner(self, ctx):
+        await ctx.send("Owner commands")
+
+    @owner.command(name="reload", description="Reload MVP cogs")
+    async def owner_reload(self, interaction: discord.Interaction):
+        """Reload MVP cogs with robust defers to avoid interaction timeouts."""
+        # Always try to defer immediately so Discord doesn't time out the interaction
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                # If defer fails (rare), we'll still try to follow up below
+                pass
+        try:
+            # You likely have a list of MVP cogs in-memory; if not, fall back to reloading this cog only
+            mvp_cogs = [
+                "cogs.owner_mvp",
+                "cogs.setup_mvp",
+                "cogs.purge_mvp",
+                "cogs.debate_mvp",
+            ]
+            reloaded = []
+            for ext in mvp_cogs:
+                try:
+                    await interaction.client.reload_extension(ext)
+                    reloaded.append(ext)
+                except Exception:
+                    # Try load if not previously loaded
+                    try:
+                        await interaction.client.load_extension(ext)
+                        reloaded.append(ext)
+                    except Exception:
+                        pass
+            await interaction.followup.send(
+                f"Reloaded: {', '.join(reloaded) if reloaded else '(none)'}",
+                ephemeral=True,
+            )
+        except Exception as e:
+            # Final safety net so the interaction is never left without a response
+            err = (str(e) or e.__class__.__name__)[:1500]
+            try:
+                await interaction.followup.send(f"Reload failed: {err}", ephemeral=True)
+            except Exception:
+                pass
+
+    @owner.command(name="status", description="Owner panel heartbeat")
+    async def owner_status(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
+        await interaction.followup.send("Owner panel online ✅", ephemeral=True)
