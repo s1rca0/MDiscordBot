@@ -119,6 +119,27 @@ class OwnerMVP(commands.Cog):
         text = "🔒 **LOCKED**" if is_locked() else "🟢 **UNLOCKED**"
         await interaction.response.send_message(text, ephemeral=True)
 
+    @owner.command(name="nuke_resync", description="Force-clear and re-sync application commands for this guild")
+    async def owner_nuke_resync(self, interaction: discord.Interaction):
+        if not await self._owner_only(interaction):
+            return await interaction.response.send_message("Owner only.", ephemeral=True)
+        if interaction.guild is None:
+            return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        gobj = discord.Object(id=interaction.guild.id)
+        try:
+            # Clear registered commands for this guild and re-sync fresh
+            interaction.client.tree.clear_commands(guild=gobj)
+            await interaction.client.tree.sync(guild=gobj)
+            # Also sync globals (helps evict stale globals)
+            await interaction.client.tree.sync()
+            await interaction.followup.send("Nuked & re-synced commands for this guild.", ephemeral=True)
+            await self._bash_log(interaction.guild, "nuke_resync", [f'guild="{interaction.guild.id}"', 'status="ok"'])
+        except Exception as e:
+            await interaction.followup.send(f"Resync failed: `{str(e)[:1800]}`", ephemeral=True)
+            await self._bash_log(interaction.guild, "nuke_resync", [f'guild="{interaction.guild.id}"', f'error="{str(e)[:120]}"'])
+
     # ------------------ architect mode (toggle hoist; optional grant/revoke) ------------------
     ARCH_ROLE_NAME = "ARCHITECT"
 
