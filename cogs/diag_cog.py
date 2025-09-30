@@ -22,7 +22,6 @@ def _mask(v: str) -> str:
     if v is None:
         return ""
     s = str(v)
-    # show raw if it's a short numeric ID (likely channel/role/user id)
     if s.isdigit() and len(s) <= 19:
         return s
     if len(s) <= 6:
@@ -36,7 +35,20 @@ class DiagCog(commands.Cog, name="Diagnostics"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # Register this group on load (important!)
     diag = app_commands.Group(name="diag", description="Diagnostics & sync checks")
+
+    async def cog_load(self) -> None:
+        try:
+            self.bot.tree.add_command(self.diag)
+        except app_commands.CommandAlreadyRegistered:
+            pass
+
+    def cog_unload(self) -> None:
+        try:
+            self.bot.tree.remove_command("diag", type=discord.AppCommandType.chat_input)
+        except Exception:
+            pass
 
     # --- /diag ping ----------------------------------------------------------
     @diag.command(name="ping", description="Latency check.")
@@ -60,17 +72,14 @@ class DiagCog(commands.Cog, name="Diagnostics"):
     async def diag_cmds(self, itx: discord.Interaction):
         if not _owner_ok(itx.user):
             await itx.response.send_message("Owner only.", ephemeral=True); return
-
         try:
             cmds = await itx.client.tree.fetch_commands(guild=itx.guild) if itx.guild else await itx.client.tree.fetch_commands()
         except Exception:
             cmds = await itx.client.tree.fetch_commands()
-
         lines: List[str] = []
         for c in cmds:
             scope = "guild" if itx.guild else "global"
             lines.append(f"• `/{c.name}` — scope:{scope}")
-
         text = "**Registered slash commands** (" + str(len(cmds)) + "):\n" + ("\n".join(lines) if lines else "*(none)*")
         await itx.response.send_message(text[:1990], ephemeral=True)
 
@@ -79,18 +88,13 @@ class DiagCog(commands.Cog, name="Diagnostics"):
     async def diag_perms(self, itx: discord.Interaction):
         if not _owner_ok(itx.user):
             await itx.response.send_message("Owner only.", ephemeral=True); return
-
         if not (isinstance(itx.user, discord.Member) and isinstance(itx.channel, (discord.TextChannel, discord.Thread))):
             await itx.response.send_message("Run this inside a server text channel.", ephemeral=True); return
-
         perms = itx.channel.permissions_for(itx.user)
-        # try iteration; fallback to __dict__
-        flags = []
         try:
             flags = [name for name, val in perms if val]
         except Exception:
             flags = [k for k, v in perms.__dict__.items() if isinstance(v, bool) and v]
-
         text = "**Your effective permissions here:**\n" + (", ".join(sorted(flags)) if flags else "_(none)_")
         await itx.response.send_message(text[:1990], ephemeral=True)
 
@@ -134,8 +138,6 @@ class DiagCog(commands.Cog, name="Diagnostics"):
     async def diag_env(self, itx: discord.Interaction, prefix: Optional[str] = None, names: Optional[str] = None):
         if not _owner_ok(itx.user):
             await itx.response.send_message("Owner only.", ephemeral=True); return
-
-        # Build selection
         env_items = os.environ.items()
         if names:
             wanted = {n.strip() for n in names.split(",") if n.strip()}
@@ -145,13 +147,8 @@ class DiagCog(commands.Cog, name="Diagnostics"):
             for k, v in env_items:
                 if prefix and not k.startswith(prefix):
                     continue
-                # sensible defaults to always show if prefix/names not provided
                 pairs.append((k, v))
-
-            # Mildly sort for readability
             pairs.sort(key=lambda kv: kv[0])
-
-        # Common useful keys to bubble to top if they exist
         bubble = [
             "OWNER_USER_ID",
             "ACTIVE_COGS",
@@ -160,7 +157,6 @@ class DiagCog(commands.Cog, name="Diagnostics"):
             "VOIDPULSE_*",
             "MEMES_ENABLED", "MEME_CHANNEL_ID", "MEME_INTERVAL_MIN", "MEME_SUBREDDITS",
         ]
-
         def _score(k: str) -> int:
             for i, tag in enumerate(bubble):
                 if tag.endswith("*"):
@@ -169,16 +165,13 @@ class DiagCog(commands.Cog, name="Diagnostics"):
                 elif k == tag:
                     return i
             return 999
-
         pairs.sort(key=lambda kv: (_score(kv[0]), kv[0]))
-
         lines: List[str] = []
         for k, v in pairs:
             try:
                 lines.append(f"`{k}` = `{_mask(v)}`")
             except Exception:
                 continue
-
         text = "**Environment (masked):**\n" + ("\n".join(lines) if lines else "_(none)_")
         await itx.response.send_message(text[:1990], ephemeral=True)
 
