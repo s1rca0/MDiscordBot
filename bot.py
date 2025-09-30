@@ -1,15 +1,15 @@
 # bot.py
+from __future__ import annotations
 import os
 import logging
-from typing import List
+from typing import Iterable, List
 
 import discord
 from discord.ext import commands
 
 # ---------------------------------------------------------------------
-# Local fallback to replace removed morpheus_voice
+# Minimal speak() to keep older helpers happy
 def speak(text: str) -> str:
-    """Fallback voice wrapper (keeps older code paths happy)."""
     return text
 # ---------------------------------------------------------------------
 
@@ -22,81 +22,92 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-# Bot
-PREFIX = os.getenv("BOT_PREFIX", os.getenv("COMMAND_PREFIX", "!"))
-TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-SYNC_ON_BOOT = str(os.getenv("SYNC_ON_BOOT", "true")).lower() in ("1", "true", "yes", "on")
-
-bot = commands.Bot(command_prefix=PREFIX, intents=intents, description="Morpheus 1.0")
-
-# ---------------------------- Cog loading ------------------------------------
-def _parse_cog_list(env_val: str | None) -> List[str]:
-    """Turn 'void_pulse_cog,meme_feed_cog' into fully-qualified module names."""
-    if not env_val:
-        return []
-    toks = [t.strip() for t in env_val.split(",") if t.strip()]
-    fq = []
-    for t in toks:
-        # allow either 'cogs.xyz' or bare 'xyz'
-        fq.append(t if "." in t else f"cogs.{t}")
-    return fq
-
-def _active_cogs() -> List[str]:
-    # Defaults for Morpheus 1.0
-    default = ["cogs.void_pulse_cog", "cogs.meme_feed_cog", "cogs.reaction_pin_cog", "cogs.diag_cog"]
-    env_val = os.getenv("ACTIVE_COGS", "")
-    return _parse_cog_list(env_val) or default
-
-def _disabled_cogs() -> set[str]:
-    return set([t.strip() if "." in t else f"cogs.{t.strip()}"
-                for t in os.getenv("DISABLED_COGS", "").split(",") if t.strip()])
-
-async def _load_cogs():
-    active = _active_cogs()
-    disabled = _disabled_cogs()
-
-    for mod in active:
-        if mod in disabled:
-            log.info("[COGS] Skipping %s (disabled)", mod)
+# ---------------------------------------------------------------------
+# Env helpers
+def _csv_ids(env_name: str) -> List[int]:
+    raw = os.getenv(env_name, "")
+    out: List[int] = []
+    for tok in raw.replace(" ", "").split(","):
+        if not tok:
             continue
         try:
-            await bot.load_extension(mod)
-            log.info("[COGS] Loaded %s", mod)
-        except Exception as e:
-            log.error("[COGS] Failed to load %s: %r", mod, e)
+            out.append(int(tok))
+        except Exception:
+            pass
+    return out
 
-# discord.py recommended startup hook: load extensions before on_ready
-@bot.setup_hook
-async def _setup_hook():
-    await _load_cogs()
+def _csv_list(env_name: str) -> List[str]:
+    raw = os.getenv(env_name, "")
+    vals = [x.strip() for x in raw.split(",") if x.strip()]
+    return vals
 
-# ---------------------------- Ready + Sync -----------------------------------
-@bot.event
-async def on_ready():
-    log.info("[READY] %s connected", bot.user)
+def _normalize_cog_name(name: str) -> str:
+    # accept "cogs.xyz" or "xyz"
+    name = name.strip()
+    return name if name.startswith("cogs.") else f"cogs.{name}"
+# ---------------------------------------------------------------------
 
-    if not SYNC_ON_BOOT:
-        return
 
-    # Force per-guild sync so new/changed commands appear immediately
-    synced_total = 0
-    for g in bot.guilds:
+class MorpheusBot(commands.Bot):
+    """Bot subclass so we can override setup_hook properly."""
+
+    def __init__(self):
+        prefix = os.getenv("BOT_PREFIX", "!")
+        super().__init__(command_prefix=prefix, intents=intents)
+        self._synced_once = False
+
+    async def setup_hook(self):
+        """Runs before connecting the websocket."""
+        # 1) Load cogs with env control
+        active = _csv_list("ACTIVE_COGS")
+        if not active:
+            # safe defaults for 1.0
+            active = ["meme_feed_cog", "reaction_pin_cog", "void_pulse_cog", "diag_cog"]
+
+        disabled = set(x.split(".")[-1] for x in _csv_list("DISABLED_COGS"))
+
+        for cog_short in active:
+            short = cog_short.split(".")[-1]
+            if short in disabled:
+                log.info("[COGS FILTER] Skipping %s (disabled)", short)
+                continue
+            module = _normalize_cog_name(cog_short)
+            try:
+                await self.load_extension(module)
+                log.info("[COGS] Loaded %s", module)
+            except Exception as e:
+                log.error("[COGS] Failed to load %s: %s", module, e)
+
+        # 2) Sync application commands
         try:
-            cmds = await bot.tree.sync(guild=g)
-            synced_total += len(cmds)
-            log.info("[SYNC] %s: %d cmds", g.name, len(cmds))
+            dev_guild_ids = _csv_ids("DEV_GUILD_IDS")
+            if dev_guild_ids:
+                # Fast iteration during development: per-guild sync
+                total = 0
+                for gid in dev_guild_ids:
+                    guild = discord.Object(id=gid)
+                    self.tree.copy_global_to(guild=guild)
+                    synced = await self.tree.sync(guild=guild)
+                    total += len(synced)
+                    log.info("[SYNC] Guild %s: %d commands", gid, len(synced))
+                log.info("[SYNC] Completed per-guild sync to %d guild(s), total cmds ~%d",
+                         len(dev_guild_ids), total)
+            else:
+                synced = await self.tree.sync()
+                log.info("[SYNC] Global: %d commands", len(synced))
+            self._synced_once = True
         except Exception as e:
-            log.error("[SYNC] %s failed: %r", g.name if g else "unknown-guild", e)
-    if not bot.guilds:
-        # If the bot isn’t in any guilds, at least ensure global tree is valid
-        try:
-            cmds = await bot.tree.sync()
-            log.info("[SYNC] global: %d cmds", len(cmds))
-        except Exception as e:
-            log.error("[SYNC] global failed: %r", e)
+            log.warning("[SYNC] Slash command sync failed: %s", e)
 
-# ------------------------------ Main -----------------------------------------
+    async def on_ready(self):
+        log.info("[READY] %s connected", self.user)
+
+
+# ---- main entry -----------------------------------------------------
 if __name__ == "__main__":
-    if not TOKEN:
+    token = os.getenv("DISCORD_TOKEN", "").strip()
+    if not token:
         raise RuntimeError("DISCORD_TOKEN not set in environment")
-    bot.run(TOKEN)
+
+    bot = MorpheusBot()
+    bot.run(token)
