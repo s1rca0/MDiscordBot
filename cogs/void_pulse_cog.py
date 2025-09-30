@@ -25,30 +25,52 @@ def _jittered_hours(base: int, jitter: int) -> int:
 class VoidPulseCog(commands.Cog, name="Void Pulse"):
     """
     Posts an atmospheric ping in a chosen channel when the server has been quiet.
-    Keeps Morpheus' "alive" vibe without spamming.
+    Channel can be forced via env var (Railway) or set via slash cmd as fallback.
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # defaults (env-overrideable via Railway/Replit)
-        self.enabled = bool(os.getenv("VOIDPULSE_ENABLE", "true").lower() in ("1", "true", "yes"))
-        self.channel_id = int(os.getenv("VOID_CHANNEL_ID", "0"))  # set via /voidpulse_set_channel
+
+        # ----- Env-first config (Railway) -----
+        # Global override for the target channel (preferred).
+        self.env_channel_id: int = int(os.getenv("VOID_BROADCAST_CHANNEL_ID", "0") or "0")
+
+        # Legacy / fallback envs (kept for compatibility).
+        self.enabled = os.getenv("VOIDPULSE_ENABLE", "true").lower() in ("1", "true", "yes")
         self.cooldown_hours = int(os.getenv("VOIDPULSE_COOLDOWN_HOURS", "36"))
         self.cooldown_jitter = int(os.getenv("VOIDPULSE_COOLDOWN_JITTER", "45"))  # +/- hours
         self.quiet_threshold_min = int(os.getenv("VOIDPULSE_QUIET_THRESHOLD_MIN", "180"))  # last non-bot msg
         self.scan_window_min = int(os.getenv("VOIDPULSE_SCAN_WINDOW_MIN", "120"))  # count-only window
         self.scan_window_max_msgs = int(os.getenv("VOIDPULSE_SCAN_WINDOW_MAXMSGS", "6"))
+
+        # Slash-set fallback (guild-local). Kept in memory only.
+        self.cmd_channel_id: int = int(os.getenv("VOID_CHANNEL_ID", "0") or "0")
+
         self.last_pulse_ts: Optional[discord.utils.utcnow] = None
 
+    # ---------- Helpers ----------
+    def _effective_channel_id(self) -> int:
+        # Env wins if present; otherwise use slash-set fallback.
+        return self.env_channel_id or self.cmd_channel_id or 0
+
+    def _channel(self, guild: Optional[discord.Guild]) -> Optional[discord.TextChannel]:
+        if not guild:
+            return None
+        ch_id = self._effective_channel_id()
+        return guild.get_channel(ch_id) if ch_id else None
+
     # ---------- Admin commands ----------
-    @app_commands.command(name="voidpulse_status", description="Show current VoidPulse configuration and recent state.")
+    @app_commands.command(name="voidpulse_status", description="Show current VoidPulse config and recent state.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def voidpulse_status(self, interaction: discord.Interaction):
         ch = self._channel(interaction.guild)
+        src = "ENV:VOID_BROADCAST_CHANNEL_ID" if self.env_channel_id else (
+            "Slash-set (volatile)" if self.cmd_channel_id else "unset"
+        )
         desc = (
             f"**Enabled:** `{self.enabled}`\n"
-            f"**Channel:** {ch.mention if ch else '`unset`'}\n"
-            f"**Cooldown (hours):** `{self.cooldown_hours}` | **Jitter (min):** `{self.cooldown_jitter}`\n"
+            f"**Channel:** {ch.mention if ch else '`unset`'}  • **Source:** `{src}`\n"
+            f"**Cooldown (hours):** `{self.cooldown_hours}` | **Jitter (±h):** `{self.cooldown_jitter}`\n"
             f"**Quiet threshold (min):** `{self.quiet_threshold_min}`\n"
             f"**Window (min):** `{self.scan_window_min}`, **Quiet if ≤ {self.scan_window_max_msgs} msgs**\n"
             f"**Last pulse:** `{int(self.last_pulse_ts.timestamp()) if self.last_pulse_ts else '—'}` (unix)\n"
@@ -56,22 +78,32 @@ class VoidPulseCog(commands.Cog, name="Void Pulse"):
         )
         await interaction.response.send_message(embed=mk_embed("VoidPulse", desc), ephemeral=True)
 
-    @app_commands.command(name="voidpulse_set_channel", description="Set the channel used for VoidPulse.")
+    @app_commands.command(name="voidpulse_set_channel", description="Set the channel used for VoidPulse (fallback if no ENV).")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def voidpulse_set_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        self.channel_id = channel.id
+        self.cmd_channel_id = channel.id
         await interaction.response.send_message(
-            embed=mk_embed("VoidPulse", f"Channel set to {channel.mention}"), ephemeral=True
+            embed=mk_embed(
+                "VoidPulse",
+                f"Fallback channel set to {channel.mention}.\n"
+                f"Note: ENV `VOID_BROADCAST_CHANNEL_ID` will override this if present."
+            ),
+            ephemeral=True
         )
+
+    @app_commands.command(name="voidpulse_reload_env", description="Reload VOID_BROADCAST_CHANNEL_ID from environment.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voidpulse_reload_env(self, interaction: discord.Interaction):
+        self.env_channel_id = int(os.getenv("VOID_BROADCAST_CHANNEL_ID", "0") or "0")
+        src = "ENV present" if self.env_channel_id else "ENV not set; using slash fallback"
+        await interaction.response.send_message(embed=mk_embed("VoidPulse", f"Reloaded env. {src}."), ephemeral=True)
 
     @app_commands.command(name="voidpulse_toggle", description="Enable/disable VoidPulse.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def voidpulse_toggle(self, interaction: discord.Interaction, enable: Optional[bool] = None):
         self.enabled = (not self.enabled) if enable is None else enable
         state = "enabled" if self.enabled else "disabled"
-        await interaction.response.send_message(
-            embed=mk_embed("VoidPulse", f"VoidPulse **{state}**."), ephemeral=True
-        )
+        await interaction.response.send_message(embed=mk_embed("VoidPulse", f"VoidPulse **{state}**."), ephemeral=True)
 
     @app_commands.command(name="voidpulse_nudge", description="Force a one-off pulse check now.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -82,11 +114,6 @@ class VoidPulseCog(commands.Cog, name="Void Pulse"):
         await interaction.followup.send(embed=mk_embed("VoidPulse", msg), ephemeral=True)
 
     # ---------- Internals ----------
-    def _channel(self, guild: Optional[discord.Guild]) -> Optional[discord.TextChannel]:
-        if not guild or not self.channel_id:
-            return None
-        return guild.get_channel(self.channel_id)
-
     async def _maybe_pulse(self, guild: Optional[discord.Guild]) -> Tuple[bool, Optional[str]]:
         if not guild or not self.enabled:
             return False, "disabled"
