@@ -1,21 +1,22 @@
 # cogs/void_pulse_cog.py
 import os
 import random
-from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List
 
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
+# ---------------------------------------------------------------------------
+# Small local helpers (avoid missing imports across variants)
+# ---------------------------------------------------------------------------
 
-# --- Small local helpers (avoid missing imports) -----------------------------
 def mk_embed(title: str, desc: str) -> discord.Embed:
     return discord.Embed(title=title, description=desc, color=discord.Color.dark_teal())
 
 def speak(text: str) -> str:
-    """Light wrapper to keep compatibility with earlier voice helpers."""
+    """Wrapper to keep compatibility with earlier voice helpers."""
     return text
 
 def _jittered_hours(base: int, jitter: int) -> int:
@@ -25,127 +26,170 @@ def _jittered_hours(base: int, jitter: int) -> int:
     hi = base + jitter
     return random.randint(lo, hi)
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
-# --- Thematic defaults if no env/file provided --------------------------------
-DEFAULT_LINES: List[str] = [
-    "[signal] The Void hums tonight. Those who listen may hear the door unlatch.",
-    "[signal] Static recedes. Pattern emerges. Query: who remains at the console?",
-    "[signal] Order requests a witness. If you’re awake, reply with a coordinate.",
-    "[signal] Veritas whispers through the noise: calibrate, align, proceed.",
-    "[signal] The Construct idles. A single keystroke could change its state.",
-    "[signal] In the dark, a green cursor blinks. Input awaits.",
-]
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        return default
 
+# ---------------------------------------------------------------------------
+# Optional AI provider (guarded)
+# ---------------------------------------------------------------------------
+
+def _maybe_ai_line() -> Optional[str]:
+    """Return an AI-crafted line if enabled and provider available; else None."""
+    if not _bool_env("VOID_BROADCAST_AI", False):
+        return None
+    try:
+        # ai_provider.py expected to offer: get_client() and simple generate()
+        # (Your repo includes ai_provider.py; this import is guarded.)
+        from ai_provider import get_client  # type: ignore
+    except Exception:
+        return None
+
+    tone = os.getenv("VOID_BROADCAST_AI_TONE", "cryptic").strip()
+    extra_prompt = os.getenv("VOID_BROADCAST_PROMPT", "").strip()
+
+    sys_prompt = (
+        "You are M.O.R.P.H.E.U.S., voice of Veritas / VEI. "
+        "Write a single, short, atmospheric line suitable for a Discord broadcast when the server is quiet. "
+        "Constraints: 1 sentence, 8–22 words, no hashtags, no @mentions, no emojis. "
+        f"Style/tone: {tone}. Themes: Veritas, VEI Network values (truth, civility, signal over noise), "
+        "The Matrix mythos, gentle call-to-action to respond. Avoid commands; invite curiosity."
+    )
+    if extra_prompt:
+        sys_prompt += f" Additional guidance: {extra_prompt}"
+
+    try:
+        client = get_client()
+        text = client.generate(system=sys_prompt, prompt="Produce the line only.", max_tokens=60).strip()
+        # basic safety/formatting guardrails
+        text = text.replace("\n", " ").strip()
+        if not text:
+            return None
+        if len(text) > 240:
+            text = text[:240].rstrip()
+        return text
+    except Exception:
+        return None
+
+# ---------------------------------------------------------------------------
+# File lines support
+# ---------------------------------------------------------------------------
+
+_LINES_PATH = os.path.join("data", "void_lines.txt")
+
+def _load_void_lines() -> List[str]:
+    try:
+        with open(_LINES_PATH, "r", encoding="utf-8") as f:
+            return [ln.strip() for ln in f.readlines() if ln.strip()]
+    except Exception:
+        return []
+
+# ---------------------------------------------------------------------------
+# Cog
+# ---------------------------------------------------------------------------
 
 class VoidPulseCog(commands.Cog, name="Void Pulse"):
     """
     Posts an atmospheric ping in a chosen channel when the server has been quiet.
-    Keeps Morpheus' "alive" vibe without spamming.
+    Keeps Morpheus' 'alive' vibe without spamming.
     """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-        # ---- Railway / env configuration (with backwards-compatible fallbacks)
-        enabled_raw = os.getenv("VOID_BROADCAST_ENABLE", os.getenv("VOIDPULSE_ENABLE", "true"))
-        self.enabled = str(enabled_raw).lower() in ("1", "true", "yes", "on")
+        # Enable / channel (new + legacy names)
+        self.enabled = _bool_env("VOID_BROADCAST_ENABLE", _bool_env("VOIDPULSE_ENABLE", True))
 
         chan_raw = os.getenv("VOID_BROADCAST_CHANNEL_ID", os.getenv("VOID_CHANNEL_ID", "0"))
         try:
-            self.channel_id = int(chan_raw)
-        except (TypeError, ValueError):
+            self.channel_id = int(chan_raw or "0")
+        except Exception:
             self.channel_id = 0
 
-        self.dry_run = str(os.getenv("VOIDPULSE_DRY_RUN", "false")).lower() in ("1", "true", "yes", "on")
+        # Cooldown & quiet-window config (support both *_HOUR and *_HOURS)
+        self.cooldown_hours = _int_env("VOIDPULSE_COOLDOWN_HOURS",
+                               _int_env("VOIDPULSE_COOLDOWN_HOUR", 36))
+        self.cooldown_jitter = _int_env("VOIDPULSE_COOLDOWN_JITTER", 45)  # +/- hours
 
-        self.cooldown_hours = int(os.getenv("VOIDPULSE_COOLDOWN_HOURS", "36"))
-        self.cooldown_jitter = int(os.getenv("VOIDPULSE_COOLDOWN_JITTER", "45"))  # +/- hours
+        # Quiet rules
+        self.quiet_threshold_min = _int_env("VOIDPULSE_QUIET_THRESHOLD_MIN", 180)
+        self.scan_window_min     = _int_env("VOIDPULSE_SCAN_WINDOW_MIN", 120)
+        self.scan_window_max_msgs= _int_env("VOIDPULSE_SCAN_WINDOW_MAXMSGS", 6)
+        self.ignore_bots         = _bool_env("VOIDPULSE_IGNORE_BOTS", True)
 
-        # last non-bot msg must be older than this many minutes
-        self.quiet_threshold_min = int(os.getenv("VOIDPULSE_QUIET_THRESHOLD_MIN", "180"))
-
-        # traffic window to count messages
-        self.scan_window_min = int(os.getenv("VOIDPULSE_SCAN_WINDOW_MIN", "120"))
-        self.scan_window_max_msgs = int(os.getenv("VOIDPULSE_SCAN_WINDOW_MAXMSGS", "6"))
-
-        # ignore bot messages for the volume window?
-        self.ignore_bots_in_window = str(os.getenv("VOIDPULSE_IGNORE_BOTS", "true")).lower() in ("1", "true", "yes", "on")
-
-        # messaging pool
-        self.lines = self._load_lines()
-
+        # Last pulse (cooldown)
         self.last_pulse_ts: Optional[datetime] = None
 
     # ---------- Admin commands ----------
-    @app_commands.command(name="voidpulse_status", description="Show current VoidPulse configuration and recent state.")
+
+    @app_commands.command(name="voidpulse_status",
+                          description="Show current VoidPulse configuration and recent state.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def voidpulse_status(self, interaction: discord.Interaction):
         ch = self._channel(interaction.guild)
         last_unix = int(self.last_pulse_ts.timestamp()) if self.last_pulse_ts else "—"
         desc = (
-            f"**Enabled:** `{self.enabled}` | **Dry-run:** `{self.dry_run}`\n"
-            f"**Channel:** {ch.mention if ch else '`unset`'} (id `{self.channel_id}`)\n"
-            f"**Cooldown (h):** `{self.cooldown_hours}` | **Jitter (h):** `{self.cooldown_jitter}`\n"
+            f"**Enabled:** `{self.enabled}`\n"
+            f"**Channel:** {ch.mention if ch else '`unset`'}\n"
+            f"**Cooldown (hours):** `{self.cooldown_hours}` | **Jitter (hours):** `{self.cooldown_jitter}`\n"
             f"**Quiet threshold (min):** `{self.quiet_threshold_min}`\n"
-            f"**Window (min):** `{self.scan_window_min}`, **Quiet if ≤ {self.scan_window_max_msgs} msgs** "
-            f"(ignore_bots=`{self.ignore_bots_in_window}`)\n"
-            f"**Lines loaded:** `{len(self.lines)}`\n"
+            f"**Window (min):** `{self.scan_window_min}`, **Quiet if ≤ {self.scan_window_max_msgs} msgs**\n"
+            f"**Ignore bot msgs:** `{self.ignore_bots}`\n"
+            f"**AI mode:** `{_bool_env('VOID_BROADCAST_AI', False)}` (tone=`{os.getenv('VOID_BROADCAST_AI_TONE','cryptic')}`)\n"
             f"**Last pulse:** `{last_unix}` (unix)\n"
             "_No message content is stored—only counts/timestamps._"
         )
         await interaction.response.send_message(embed=mk_embed("VoidPulse", desc), ephemeral=True)
 
-    @app_commands.command(name="voidpulse_set_channel", description="Set the channel used for VoidPulse.")
+    @app_commands.command(name="voidpulse_set_channel",
+                          description="Set the channel used for VoidPulse.")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def voidpulse_set_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def voidpulse_set_channel(self, interaction: discord.Interaction,
+                                    channel: discord.TextChannel):
         self.channel_id = channel.id
         await interaction.response.send_message(
             embed=mk_embed("VoidPulse", f"Channel set to {channel.mention}"), ephemeral=True
         )
 
-    @app_commands.command(name="voidpulse_toggle", description="Enable/disable VoidPulse.")
+    @app_commands.command(name="voidpulse_toggle",
+                          description="Enable/disable VoidPulse.")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def voidpulse_toggle(self, interaction: discord.Interaction, enable: Optional[bool] = None):
+    async def voidpulse_toggle(self, interaction: discord.Interaction,
+                               enable: Optional[bool] = None):
         self.enabled = (not self.enabled) if enable is None else bool(enable)
         state = "enabled" if self.enabled else "disabled"
-        await interaction.response.send_message(embed=mk_embed("VoidPulse", f"VoidPulse **{state}**."), ephemeral=True)
+        await interaction.response.send_message(
+            embed=mk_embed("VoidPulse", f"VoidPulse **{state}**."), ephemeral=True
+        )
 
-    @app_commands.command(name="voidpulse_nudge", description="Force a one-off pulse check now.")
+    @app_commands.command(name="voidpulse_nudge",
+                          description="Force a one-off pulse check now.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def voidpulse_nudge(self, interaction: discord.Interaction):
-        await interaction.response.send_message(embed=mk_embed("VoidPulse", "Attempting a pulse…"), ephemeral=True)
+        await interaction.response.send_message(embed=mk_embed("VoidPulse", "Attempting a pulse…"),
+                                                ephemeral=True)
         ok, why = await self._maybe_pulse(interaction.guild)
         msg = "Done." if ok else f"No pulse: {why or 'conditions not met'}"
         await interaction.followup.send(embed=mk_embed("VoidPulse", msg), ephemeral=True)
 
     # ---------- Internals ----------
-    def _load_lines(self) -> List[str]:
-        # 1) ENV: VOID_BROADCAST_LINES="line A|line B|line C"
-        env_lines = os.getenv("VOID_BROADCAST_LINES", "").strip()
-        parts: List[str] = []
-        if env_lines:
-            parts = [p.strip() for p in env_lines.split("|") if p.strip()]
-
-        # 2) File: data/void_lines.txt (one line per message)
-        if not parts:
-            p = Path("data/void_lines.txt")
-            if p.exists():
-                try:
-                    with p.open("r", encoding="utf-8") as f:
-                        parts = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
-                except Exception:
-                    parts = []
-
-        # 3) Fallback to defaults
-        return parts if parts else DEFAULT_LINES[:]
 
     def _channel(self, guild: Optional[discord.Guild]) -> Optional[discord.TextChannel]:
         if not guild or not self.channel_id:
             return None
         ch = guild.get_channel(self.channel_id)
-        if isinstance(ch, discord.TextChannel):
-            return ch
-        return None
+        return ch if isinstance(ch, discord.TextChannel) else None
 
     async def _maybe_pulse(self, guild: Optional[discord.Guild]) -> Tuple[bool, Optional[str]]:
         if not guild or not self.enabled:
@@ -155,46 +199,38 @@ class VoidPulseCog(commands.Cog, name="Void Pulse"):
         if not ch:
             return False, "no channel set"
 
-        # If the very last message in the channel is from THIS bot, don't immediately pulse again
-        try:
-            last = await ch.history(limit=1).flatten()
-            if last:
-                lm = last[0]
-                if lm.author.id == self.bot.user.id:
-                    return False, "last message is mine"
-        except discord.Forbidden:
-            return False, "insufficient permissions (read history)"
-
         # Cooldown
         if self.last_pulse_ts:
-            elapsed_h = (datetime.utcnow() - self.last_pulse_ts).total_seconds() / 3600.0
-            if elapsed_h < _jittered_hours(self.cooldown_hours, self.cooldown_jitter):
+            elapsed = (datetime.utcnow() - self.last_pulse_ts).total_seconds() / 3600.0
+            if elapsed < _jittered_hours(self.cooldown_hours, self.cooldown_jitter):
                 return False, "cooldown"
 
         ok, why = await self._is_quiet(ch)
         if not ok:
             return False, why
 
-        # Post the “alive” signal
-        line = random.choice(self.lines)
-        if self.dry_run:
-            # record the time anyway so we don't spam nudges during tests
-            self.last_pulse_ts = datetime.utcnow()
-            return False, f"dry-run: would send -> {line}"
+        # Message selection:
+        # 1) AI (if enabled & available)  2) file line  3) fallback static line
+        msg = _maybe_ai_line()
+        if not msg:
+            lines = _load_void_lines()  # hot-reload each pulse so file edits apply without restart
+            if lines:
+                msg = random.choice(lines)
+            else:
+                msg = "[signal] The Void hums tonight. Those who listen may hear the door unlatch."
 
-        await ch.send(speak(line))
+        await ch.send(speak(msg))
         self.last_pulse_ts = datetime.utcnow()
         return True, None
 
     async def _is_quiet(self, channel: discord.TextChannel) -> Tuple[bool, str]:
         """
         Quiet == (last non-bot user message older than quiet_threshold)
-                 AND (message count within scan window <= max msgs) [optionally ignoring bot msgs]
+                 AND (message count within scan window <= max msgs)
         """
         quiet_thresh = self.quiet_threshold_min
         window_min = self.scan_window_min
         max_msgs = self.scan_window_max_msgs
-        ignore_bots = self.ignore_bots_in_window
 
         now = datetime.utcnow()
         since_ts = now - timedelta(minutes=max(quiet_thresh, window_min))
@@ -204,27 +240,29 @@ class VoidPulseCog(commands.Cog, name="Void Pulse"):
 
         try:
             async for msg in channel.history(limit=200, after=since_ts, oldest_first=False):
-                msg_age_min = int(((now - msg.created_at.replace(tzinfo=None)).total_seconds()) // 60)
+                # Normalize to naive UTC minutes
+                created = msg.created_at
+                if created.tzinfo is not None:
+                    created = created.astimezone(tz=None).replace(tzinfo=None)
+                age_min = int(((now - created).total_seconds()) // 60)
 
-                # Count window volume
-                if msg_age_min <= window_min:
-                    if ignore_bots:
-                        if not msg.author.bot:
-                            count_in_window += 1
+                # Window volume
+                if age_min <= window_min:
+                    # Optionally ignore bot traffic
+                    if self.ignore_bots and getattr(msg.author, "bot", False):
+                        pass
                     else:
                         count_in_window += 1
 
-                # Track most recent non-bot author age for quiet threshold
-                if (not msg.author.bot) and last_user_msg_age_min is None:
-                    last_user_msg_age_min = msg_age_min
-
+                # Track most recent non-bot human message for quiet-gap
+                if (not getattr(msg.author, "bot", False)) and last_user_msg_age_min is None:
+                    last_user_msg_age_min = age_min
         except discord.Forbidden:
             # conservative: never pulse if we can’t read history
-            return False, "insufficient permissions (history)"
+            return False, "insufficient permissions"
 
         if last_user_msg_age_min is None:
-            # none found → treat as very old
-            last_user_msg_age_min = 10**6
+            last_user_msg_age_min = 10**6  # treat as very old if none found
 
         cond_gap = last_user_msg_age_min >= quiet_thresh
         cond_volume = count_in_window <= max_msgs
