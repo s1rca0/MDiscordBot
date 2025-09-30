@@ -1,4 +1,4 @@
- # cogs/diag_cog.py
+# cogs/diag_cog.py
 from __future__ import annotations
 import os
 from typing import Optional, List
@@ -35,20 +35,9 @@ class DiagCog(commands.Cog, name="Diagnostics"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # Register this group on load (important!)
+    # NOTE: Defining the group as a class attribute is enough.
+    # Do NOT add it again in cog_load(); that causes CommandAlreadyRegistered.
     diag = app_commands.Group(name="diag", description="Diagnostics & sync checks")
-
-    async def cog_load(self) -> None:
-        try:
-            self.bot.tree.add_command(self.diag)
-        except app_commands.CommandAlreadyRegistered:
-            pass
-
-    def cog_unload(self) -> None:
-        try:
-            self.bot.tree.remove_command("diag", type=discord.AppCommandType.chat_input)
-        except Exception:
-            pass
 
     # --- /diag ping ----------------------------------------------------------
     @diag.command(name="ping", description="Latency check.")
