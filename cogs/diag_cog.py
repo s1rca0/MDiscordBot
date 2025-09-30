@@ -62,9 +62,10 @@ class DiagCog(commands.Cog, name="Diagnostics"):
         if not _owner_ok(itx.user):
             await itx.response.send_message("Owner only.", ephemeral=True); return
         try:
-            cmds = await itx.client.tree.fetch_commands(guild=itx.guild) if itx.guild else await itx.client.tree.fetch_commands()
+            # Use self.bot.tree to keep the type checker happy
+            cmds = await self.bot.tree.fetch_commands(guild=itx.guild)
         except Exception:
-            cmds = await itx.client.tree.fetch_commands()
+            cmds = await self.bot.tree.fetch_commands()
         lines: List[str] = []
         for c in cmds:
             scope = "guild" if itx.guild else "global"
