@@ -1,0 +1,10 @@
+{
+  // Treat .env correctly and avoid accidental reformats
+  "files.associations": { "*.env": "dotenv" },
+  "[dotenv]": { "editor.formatOnSave": false },
+  "files.watcherExclude": { "**/.env": true },
+
+  // Python editor hygiene (optional niceties)
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.autoImportCompletions": true
+}

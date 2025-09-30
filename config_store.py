@@ -1,42 +1,87 @@
 # config_store.py
-"""
-Zero-dependency, volume-free config overlay.
-
-- Reads from env for anything that already exists.
-- Lets cogs write ephemeral overrides in-memory (Hobby plan safe).
-- `setup_cog.py` calls store.set(...), store.get(...), store.all()
-- `BotConfig.reload_overrides(store.all())` will use these until restart.
-"""
-
-from __future__ import annotations
-import os
+import json, os, threading
 from typing import Any, Dict
+from config import STATE_FILE, DATA_DIR
 
+_lock = threading.Lock()
+_state: Dict[str, Any] = {
+    "global": {"lockdown": False},
+    "guilds": {}  # guild_id -> { "brand": "...", "channels": {"welcome": id, "memes": id, "void": id, "open_chat": id}, "debate": {"terms_on": True, "coach_on": True}}
+}
 
-class _MemoryStore:
-    def __init__(self) -> None:
-        # In-memory only (lost on restart – perfect for Railway Hobby)
-        self._overrides: Dict[str, str] = {}
+def _ensure_loaded():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(STATE_FILE):
+        _save()
+    else:
+        _load()
 
-    # Read: in-memory overrides win, else fall back to env, else default
-    def get(self, key: str, default: Any = None) -> Any:
-        if key in self._overrides:
-            return self._overrides[key]
-        val = os.getenv(key)
-        return val if val is not None else default
+def _load():
+    global _state
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            _state = json.load(f)
+    except Exception:
+        _state = {"global": {"lockdown": False}, "guilds": {}}
 
-    # Write: store as string (since envs are strings)
-    def set(self, key: str, value: Any) -> None:
-        self._overrides[key] = "" if value is None else str(value)
+def _save():
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(_state, f, indent=2, sort_keys=True)
+    os.replace(tmp, STATE_FILE)
 
-    # Bulk view of overrides (used by BotConfig.reload_overrides)
-    def all(self) -> Dict[str, str]:
-        return dict(self._overrides)
+def is_locked() -> bool:
+    _ensure_loaded()
+    with _lock:
+        return bool(_state["global"].get("lockdown", False))
 
-    # Helpful utility if you ever want to clear in-memory values
-    def clear(self) -> None:
-        self._overrides.clear()
+def set_locked(v: bool):
+    _ensure_loaded()
+    with _lock:
+        _state["global"]["lockdown"] = bool(v)
+        _save()
 
+def gobj(guild_id: int) -> Dict[str, Any]:
+    _ensure_loaded()
+    with _lock:
+        g = _state["guilds"].setdefault(str(guild_id), {})
+        g.setdefault("brand", None)
+        g.setdefault("channels", {})
+        g.setdefault("debate", {"terms_on": True, "coach_on": True})
+        return g
 
-# This is what cogs import: `from config_store import store`
-store = _MemoryStore()
+def set_guild_setting(guild_id: int, key: str, value: Any):
+    _ensure_loaded()
+    with _lock:
+        g = gobj(guild_id)
+        g[key] = value
+        _save()
+
+def get_guild_setting(guild_id: int, key: str, default=None):
+    _ensure_loaded()
+    with _lock:
+        return gobj(guild_id).get(key, default)
+
+def set_channel(guild_id: int, kind: str, channel_id: int):
+    _ensure_loaded()
+    with _lock:
+        g = gobj(guild_id)
+        g["channels"][kind] = int(channel_id)
+        _save()
+
+def get_channel(guild_id: int, kind: str, default=None):
+    _ensure_loaded()
+    with _lock:
+        return gobj(guild_id)["channels"].get(kind, default)
+
+def set_debate_flag(guild_id: int, flag: str, val: bool):
+    _ensure_loaded()
+    with _lock:
+        g = gobj(guild_id)
+        g["debate"][flag] = bool(val)
+        _save()
+
+def get_debate(guild_id: int) -> Dict[str, Any]:
+    _ensure_loaded()
+    with _lock:
+        return dict(gobj(guild_id)["debate"])
