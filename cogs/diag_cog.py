@@ -1,4 +1,4 @@
-# cogs/diag_cog.py
+ # cogs/diag_cog.py
 from __future__ import annotations
 import os
 from typing import Optional, List
