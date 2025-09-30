@@ -1,29 +1,58 @@
-# cogs/void_pulse_cog.py
+# bot.py
 import os
+import logging
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 
-from cogs.utils.morpheus_voice import speak
+# ---------------------------------------------------------------------
+# Local fallback to replace removed morpheus_voice
+def speak(text: str) -> str:
+    """Fallback voice wrapper (keeps older code paths happy)."""
+    return text
+# ---------------------------------------------------------------------
 
-class VoidPulseCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.channel_id = int(os.getenv("VOID_BROADCAST_CHANNEL", "0"))
-        self.ai_prompt = os.getenv("VOID_BROADCAST_PROMPT", "").strip()
-        self._pulse_task = self._maybe_pulse.start()
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("morpheus")
 
-    @tasks.loop(minutes=60)
-    async def _maybe_pulse(self):
-        if not self.channel_id:
-            return
-        ch = self.bot.get_channel(self.channel_id)
-        if not ch:
-            return
-        # Send message with optional AI prompt
-        if self.ai_prompt:
-            # Use AI to generate message
-            from cogs.utils.morpheus_voice import ai_generate
-            msg_text = await ai_generate(self.ai_prompt, tone=os.getenv("VOID_BROADCAST_AI_TONE", "cryptic"))
-        else:
-            msg_text = speak("[signal] The Void hums tonight. Those who listen may hear the door unlatch.")
-        await ch.send(msg_text)
+# Intents
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True  # needed for modern bots
+
+# Bot setup
+PREFIX = os.getenv("BOT_PREFIX", "!")
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+
+# Cog loader
+async def load_cogs():
+    active_cogs = [
+        "cogs.meme_feed_cog",
+        "cogs.reaction_pin_cog",
+        "cogs.void_pulse_cog",
+    ]
+    disabled = os.getenv("DISABLED_COGS", "").split(",")
+    disabled = [c.strip() for c in disabled if c.strip()]
+
+    for cog in active_cogs:
+        name = cog.split(".")[-1]
+        if name in disabled:
+            logger.info(f"[COGS FILTER] Skipping {cog} (disabled)")
+            continue
+        try:
+            await bot.load_extension(cog)
+            logger.info(f"[COGS] Loaded {cog}")
+        except Exception as e:
+            logger.error(f"[COGS] Failed to load {cog}: {e}")
+
+@bot.event
+async def on_ready():
+    logger.info(f"[READY] {bot.user} connected")
+    await load_cogs()
+
+if __name__ == "__main__":
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN not set in environment")
+    bot.run(TOKEN)
