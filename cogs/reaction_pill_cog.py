@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from typing import Optional, List
+import asyncio
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# --- your custom emoji IDs (server-specific) ---
+# --- custom emoji IDs (server-specific) ---
 RED_PILL_EMOJI_ID: int = 1410378719180099614
 BLUE_PILL_EMOJI_ID: int = 1410378754768896140
 
@@ -22,16 +23,13 @@ class RoleConsoleView(discord.ui.View):
         super().__init__(timeout=None)
         self.roles = roles
 
-        opts = [
-            discord.SelectOption(label=r.name, value=str(r.id))
-            for r in roles
-        ]
+        opts = [discord.SelectOption(label=r.name, value=str(r.id)) for r in roles]
         # One menu; you can pick any subset
         self.select = discord.ui.Select(
             placeholder="Toggle roles…",
             min_values=0,
-            max_values=len(opts),
-            options=opts,
+            max_values=len(opts) if opts else 1,
+            options=opts or [discord.SelectOption(label="(no roles available)", value="0", default=True)],
             custom_id="role_console_select",
         )
         self.select.callback = self._on_select  # bind callback
@@ -54,7 +52,7 @@ class RoleConsoleView(discord.ui.View):
                     "Could not resolve your member record.", ephemeral=True
                 )
 
-        picked_ids = {int(v) for v in self.select.values}
+        picked_ids = {int(v) for v in self.select.values if v.isdigit()}
         to_add, to_remove = [], []
 
         for role in self.roles:
@@ -133,7 +131,7 @@ class RolePillView(discord.ui.View):
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
 
-        # Safe edit pattern (fixes Pylance warning)
+        # Safe edit pattern
         try:
             if interaction.response.is_done():
                 await interaction.edit_original_response(view=self)
@@ -174,7 +172,7 @@ class ReactionPillCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # --- helper: deliver role console to DM or channel ---
+    # --- helper: deliver role console to DM or channel (with subtle “boot” flourish) ---
     async def _deliver_role_console(
         self,
         member: discord.Member,
@@ -190,18 +188,47 @@ class ReactionPillCog(commands.Cog):
 
         # Prefer channel if provided
         if channel is not None:
-            await channel.send(content=member.mention, embed=embed, view=view)
-            return True
+            try:
+                async with channel.typing():
+                    await asyncio.sleep(1.6)  # subtle delay to feel “alive”
+                await channel.send(
+                    content=member.mention,
+                    embed=embed,
+                    view=view
+                )
+                # small boot line right after
+                await channel.send(
+                    content="```ansi\n\x1b[2m> initializing role console …\x1b[0m  \x1b[32m█\x1b[0m\x1b[90m▒▒▒\x1b[0m\n```",
+                    delete_after=6
+                )
+                return True
+            except discord.Forbidden:
+                return False
 
         # Try DM
         try:
             dm = await member.create_dm()
+            async with dm.typing():
+                await asyncio.sleep(1.6)
             await dm.send(embed=embed, view=view)
+            await dm.send(
+                content="```ansi\n\x1b[2m> initializing role console …\x1b[0m  \x1b[32m█\x1b[0m\x1b[90m▒▒▒\x1b[0m\n```",
+                delete_after=6
+            )
             return True
         except discord.Forbidden:
             if dm_fallback and channel is not None:
-                await channel.send(content=member.mention, embed=embed, view=view)
-                return True
+                try:
+                    async with channel.typing():
+                        await asyncio.sleep(1.6)
+                    await channel.send(content=member.mention, embed=embed, view=view)
+                    await channel.send(
+                        content="```ansi\n\x1b[2m> initializing role console …\x1b[0m  \x1b[32m█\x1b[0m\x1b[90m▒▒▒\x1b[0m\n```",
+                        delete_after=6
+                    )
+                    return True
+                except discord.Forbidden:
+                    return False
             return False
 
     # =========================
@@ -346,6 +373,7 @@ class ReactionPillCog(commands.Cog):
         em.set_footer(text="Red grants access • Blue does nothing")
 
         parent = self
+
         class FlowView(RolePillView):
             """Extends RolePillView to also deliver the console after granting."""
             def __init__(self, gr: discord.Role):
@@ -353,7 +381,6 @@ class ReactionPillCog(commands.Cog):
 
             async def _grant(self, i: discord.Interaction):
                 await super()._grant(i)
-                # after buttons are disabled, try to deliver console
                 if not i.guild:
                     return
                 member = i.guild.get_member(i.user.id) or await i.guild.fetch_member(i.user.id)  # type: ignore
