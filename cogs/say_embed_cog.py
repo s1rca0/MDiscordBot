@@ -1,7 +1,7 @@
 # cogs/say_embed_cog.py
 from __future__ import annotations
 from typing import Optional
-import re
+import re, json
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -14,8 +14,7 @@ def parse_color(s: str | None) -> discord.Color:
     m = HEX_RE.match(s.strip())
     if m:
         return discord.Color(int(m.group(1), 16))
-    named = s.strip().lower()
-    # small set of nice defaults
+    named = s.strip().lower() if s else ""
     colors = {
         "red": discord.Color.red(),
         "dark_red": discord.Color.dark_red(),
@@ -41,6 +40,7 @@ def parse_color(s: str | None) -> discord.Color:
     return colors.get(named, discord.Color.blurple())
 
 class EmbedDraft(discord.ui.Modal, title="Compose Embed"):
+    # <= 5 fields total (Discord modal limit)
     title_input = discord.ui.TextInput(
         label="Title",
         placeholder="VEI Netw0rk // PROTOCOLS",
@@ -66,31 +66,19 @@ class EmbedDraft(discord.ui.Modal, title="Compose Embed"):
         required=False,
         max_length=2048,
     )
-    thumbnail_input = discord.ui.TextInput(
-        label="Thumbnail URL (optional)",
-        placeholder="https://…",
+    media_input = discord.ui.TextInput(
+        label="Media URLs (optional)",
+        placeholder="image_url[, thumbnail_url]",
         required=False,
-        max_length=512,
-    )
-    image_input = discord.ui.TextInput(
-        label="Image URL (optional)",
-        placeholder="https://…",
-        required=False,
-        max_length=512,
-    )
-    author_input = discord.ui.TextInput(
-        label="Author (optional)",
-        placeholder="Morpheus",
-        required=False,
-        max_length=256,
+        max_length=1024,
     )
 
     def __init__(self, target_channel: discord.TextChannel, mention_role: Optional[discord.Role], pin: bool):
+        # keep children <= 5 inputs
         super().__init__(timeout=300)
         self.target_channel = target_channel
         self.mention_role = mention_role
         self.pin = pin
-        self._message_preview: Optional[discord.Message] = None
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -100,14 +88,20 @@ class EmbedDraft(discord.ui.Modal, title="Compose Embed"):
             description=str(self.description_input.value),
             color=parse_color(str(self.color_input.value) if self.color_input.value else None),
         )
+
         if self.footer_input.value:
             em.set_footer(text=str(self.footer_input.value))
-        if self.thumbnail_input.value:
-            em.set_thumbnail(url=str(self.thumbnail_input.value))
-        if self.image_input.value:
-            em.set_image(url=str(self.image_input.value))
-        if self.author_input.value:
-            em.set_author(name=str(self.author_input.value))
+
+        # media: "image[, thumbnail]"
+        if self.media_input.value:
+            parts = [p.strip() for p in str(self.media_input.value).split(",") if p.strip()]
+            if len(parts) >= 1:
+                em.set_image(url=parts[0])
+            if len(parts) >= 2:
+                em.set_thumbnail(url=parts[1])
+
+        # default author to Morpheus (kept out of modal to honor 5-field limit)
+        em.set_author(name="Morpheus")
 
         content = self.mention_role.mention if self.mention_role else None
         msg = await self.target_channel.send(content=content, embed=em)
@@ -144,7 +138,6 @@ class SayEmbedCog(commands.Cog):
         mention_role: Optional[discord.Role] = None,
         pin: Optional[bool] = False,
     ):
-        # Permission gate: Manage Messages OR Manage Guild OR Administrator
         member = interaction.user
         if not isinstance(member, discord.Member) or not (
             member.guild_permissions.manage_messages
@@ -157,7 +150,6 @@ class SayEmbedCog(commands.Cog):
             )
         await interaction.response.send_modal(EmbedDraft(channel, mention_role, bool(pin)))
 
-    # Power users: JSON mode (for saved templates)
     @app_commands.command(
         name="say_embed_json",
         description="Post an embed by JSON (title, description, color, footer, image, thumbnail, author).",
@@ -176,8 +168,6 @@ class SayEmbedCog(commands.Cog):
         mention_role: Optional[discord.Role] = None,
         pin: Optional[bool] = False,
     ):
-        import json
-
         member = interaction.user
         if not isinstance(member, discord.Member) or not (
             member.guild_permissions.manage_messages
@@ -201,6 +191,8 @@ class SayEmbedCog(commands.Cog):
                 em.set_footer(text=str(footer))
             if author := data.get("author"):
                 em.set_author(name=str(author))
+            else:
+                em.set_author(name="Morpheus")
             if thumb := data.get("thumbnail"):
                 em.set_thumbnail(url=str(thumb))
             if image := data.get("image"):
@@ -226,3 +218,4 @@ class SayEmbedCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SayEmbedCog(bot))
+    print("[COGS] Loaded cogs.say_embed_cog")
