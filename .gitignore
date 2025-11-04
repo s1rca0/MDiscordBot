@@ -21,4 +21,4 @@ bot.log
 *.sqlite3
 
 # --- Ignore backups ---
-*.backup
+*.backup.DS_Store
