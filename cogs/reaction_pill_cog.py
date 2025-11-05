@@ -385,7 +385,7 @@ class ReactionPillCog(commands.Cog):
         em.set_footer(text="Red grants access • Blue does nothing")
 
         # default to S1rca's pick if not provided
-        image_url = image_url or "https://tenor.com/view/pill-red-sibarita-matrix-sibaritadevandal-gif-22169882"
+        image_url = image_url or "https://cdn.discordapp.com/attachments/1242311851765661843/1435429086464970792/pill-red-sibarita-matrix.gif?ex=690bef03&is=690a9d83&hm=39267ba7d545eeda16cfeff1f45b0b924f7652e5c28809822175ff4d928df481&"
         try:
             if image_url:
                 em.set_image(url=image_url)
