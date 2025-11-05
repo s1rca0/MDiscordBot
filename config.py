@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from typing import Dict, Optional
+
 load_dotenv()
 
 # Load .env explicitly from repo root; fall back to process env
@@ -46,6 +48,15 @@ DEV_GUILD_IDS = {int(x) for x in os.getenv("DEV_GUILD_IDS", "").replace(" ", "")
 # Core role IDs (set in your server; leave 0 if not used yet)
 MAINFRAME_ROLE_ID       = int(os.getenv("MAINFRAME_ROLE_ID", "0"))    # default/basic role on join
 THE_CONSTRUCT_ROLE_ID   = int(os.getenv("THE_CONSTRUCT_ROLE_ID", "0")) # granted on Red Pill
+
+# Role IDs mapping for align_cog and quiz system (empty dict by default)
+ROLE_IDS: Dict[str, int] = {}  # mapping of role names to IDs for align_cog and quiz system
+
+# Review channel ID for quiz system feedback and discussion
+REVIEW_CHANNEL_ID = int(os.getenv("REVIEW_CHANNEL_ID", "0"))  # channel ID for quiz review
+
+# Default color for embeds in align_cog and quiz system (decimal)
+COLOR = int(os.getenv("COLOR", str(int("0x00FF88", 16))))  # embed color accent
 
 # Where to send step‑2 role menu (Option B flow). If 0, bot will DM instead.
 ROLE_CONSOLE_CHAN_ID    = int(os.getenv("ROLE_CONSOLE_CHAN_ID", "0"))
