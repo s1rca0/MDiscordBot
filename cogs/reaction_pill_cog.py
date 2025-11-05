@@ -242,7 +242,8 @@ class ReactionPillCog(commands.Cog):
         channel="Where to post the choice",
         grant_role="Role to grant when the red pill is chosen",
         title="Optional custom title",
-        body="Optional custom body"
+        body="Optional custom body",
+        image_url="Optional image/GIF URL to display in the embed"
     )
     async def offer_pill(
         self,
@@ -251,6 +252,7 @@ class ReactionPillCog(commands.Cog):
         grant_role: discord.Role,
         title: Optional[str] = None,
         body: Optional[str] = None,
+        image_url: Optional[str] = None,
     ):
         if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_roles:
             return await interaction.response.send_message("You need **Manage Roles**.", ephemeral=True)
@@ -265,6 +267,14 @@ class ReactionPillCog(commands.Cog):
         em = discord.Embed(title=title, description=body, color=discord.Color.dark_red())
         em.set_author(name="Morpheus")
         em.set_footer(text="Red grants access • Blue does nothing")
+
+        # default to S1rca's pick if not provided
+        image_url = image_url or "https://tenor.com/view/pill-red-sibarita-matrix-sibaritadevandal-gif-22169882"
+        try:
+            if image_url:
+                em.set_image(url=image_url)
+        except Exception:
+            pass  # don't fail the command if the URL isn't embeddable
 
         await interaction.response.defer(ephemeral=True)
         await channel.send(embed=em, view=RolePillView(grant_role))
@@ -336,7 +346,8 @@ class ReactionPillCog(commands.Cog):
         role3="Third toggleable role",
         role4="Fourth toggleable role",
         role5="Fifth toggleable role",
-        dm_fallback="If DM fails, post in console_channel (default: true)"
+        dm_fallback="If DM fails, post in console_channel (default: true)",
+        image_url="Optional image/GIF URL to display in the embed"
     )
     async def offer_pill_flow(
         self,
@@ -350,6 +361,7 @@ class ReactionPillCog(commands.Cog):
         role4: Optional[discord.Role] = None,
         role5: Optional[discord.Role] = None,
         dm_fallback: Optional[bool] = True,
+        image_url: Optional[str] = None,
     ):
         if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_roles:
             return await interaction.response.send_message("You need **Manage Roles**.", ephemeral=True)
@@ -371,6 +383,14 @@ class ReactionPillCog(commands.Cog):
         )
         em.set_author(name="Morpheus")
         em.set_footer(text="Red grants access • Blue does nothing")
+
+        # default to S1rca's pick if not provided
+        image_url = image_url or "https://tenor.com/view/pill-red-sibarita-matrix-sibaritadevandal-gif-22169882"
+        try:
+            if image_url:
+                em.set_image(url=image_url)
+        except Exception:
+            pass
 
         parent = self
 
